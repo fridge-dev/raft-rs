@@ -1,3 +1,5 @@
+use raft_rs::run_it;
+
 fn main() {
-    println!("Hello, world!");
+    run_it()
 }
