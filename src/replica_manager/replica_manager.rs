@@ -1,5 +1,5 @@
 use crate::commitlog::{Entry, Log, LogFactory, LogConfig};
-use crate::replica::{RaftReplica, RaftConfig};
+use crate::replica::{RaftReplica, ReplicaConfig};
 use std::net::Ipv4Addr;
 use std::collections::HashMap;
 
@@ -50,7 +50,7 @@ impl<L: Log, F: LogFactory<L>> ReplicaManager<L, F> {
             Err(e) => println!("Log initialization failed: {:?}", e)
         }
 
-        RaftReplica::new(RaftConfig {
+        RaftReplica::new(ReplicaConfig {
             me: self.me,
             cluster_members,
             log,

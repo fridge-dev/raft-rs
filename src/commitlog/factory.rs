@@ -36,7 +36,7 @@ pub struct SegmentedDiskLogFactory {
 impl LogFactory<SegmentedDiskLog> for SegmentedDiskLogFactory {
     fn try_create_log(&self, config: LogConfig) -> Result<SegmentedDiskLog, io::Error> {
         let sdl = SegmentedDiskLog::new(StorageConfig {
-            directory: format!("/raft/commitlog/cluster_{}/", config.cluster_id),
+            directory: format!("/raft/replicated-commit-log/cluster_{}/", config.cluster_id),
         });
 
         Ok(sdl)

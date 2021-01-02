@@ -4,7 +4,7 @@ use std::io;
 #[derive(Debug, Copy, Clone)]
 pub struct Index(pub u64);
 
-/// Log is an append only log intended for use as a commit log in a database.
+/// Log is an append only log intended for use as a replicated commit log in a database.
 pub trait Log {
     /// append() appends a log entry to the log at the next log entry index, then returns
     /// the log entry index that was just used to append the entry.
