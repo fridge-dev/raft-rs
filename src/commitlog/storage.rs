@@ -2,10 +2,25 @@ use crate::commitlog::{Log, Entry, Index};
 use std::io::Error;
 
 // Based on https://thehoard.blog/how-kafkas-storage-internals-work-3a29b02e026
-struct SegmentedDiskLog {
+pub struct SegmentedDiskLog {
     // TODO:3 implement a durable commit log.
 }
 
+// Generic config for initializing any type of disk-based commit log, independent of data
+// model and algorithm.
+pub struct StorageConfig {
+    pub directory: String,
+}
+
+impl SegmentedDiskLog {
+    pub fn new(_: StorageConfig) -> Self {
+        SegmentedDiskLog {
+            // Nothing
+        }
+    }
+}
+
+#[allow(unused_variables)]
 impl Log for SegmentedDiskLog {
     fn append(&mut self, entry: Entry) -> Result<Index, Error> {
         unimplemented!()
