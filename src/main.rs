@@ -1,4 +1,4 @@
-use raft_rs::{GrpcServer, InMemoryLogFactory, ReplicaManager};
+use raft_rs::{GrpcServer, InMemoryLogFactory, ReplicaId, ReplicaManager};
 
 fn main() {
     let replica_manager = ReplicaManager::new(ReplicaId("id-1".into()), InMemoryLogFactory::new());
