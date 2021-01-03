@@ -1,5 +1,6 @@
 use crate::commitlog::Index;
 use std::collections::HashMap;
+use crate::ReplicaId;
 
 pub enum ElectionState {
     Leader(LeaderState),
@@ -21,7 +22,7 @@ impl ElectionState {
 }
 
 pub struct LeaderState {
-    peer_state: HashMap<String, LeaderServerView>,
+    peer_state: HashMap<ReplicaId, LeaderServerView>,
 }
 
 struct LeaderServerView {

@@ -10,6 +10,8 @@ use std::collections::HashMap;
 // not nodes. In other words, a replica participates in a cluster.
 //
 // On a single node, we will only participate at most one replica per cluster.
+//
+// TODO:2 This is overly complicated and probably unnecessary. Remove multi-replica/multi-cluster per node concept.
 pub struct ReplicaManager<L: Log, F: LogFactory<L>, S: PersistentLocalState, M: StateMachine> {
     me: ReplicaId,
     replica_by_cluster_id: HashMap<String, RaftReplica<L, S, M>>,

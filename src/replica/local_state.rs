@@ -1,13 +1,14 @@
 use crate::replica::replica::Term;
+use crate::ReplicaId;
 
 /// PersistentLocalState is used whenever the raft spec requires that something is persisted to a
 /// durable store to guarantee safety. Not everything that uses disk has to go through this, only
 /// algorithm-correctness-critical ones.
 pub trait PersistentLocalState {
     fn store_term_if_increased(&mut self, new_term: Term) -> bool;
-    fn store_vote_for_term_if_unvoted(&mut self, expected_term: Term, vote: String) -> bool;
+    fn store_vote_for_term_if_unvoted(&mut self, expected_term: Term, vote: ReplicaId) -> bool;
     fn current_term(&self) -> Term;
-    fn voted_for_current_term(&self) -> (Term, Option<&String>);
+    fn voted_for_current_term(&self) -> (Term, Option<&ReplicaId>);
 }
 
 // Currently, this is not persistent. It's just in memory. But I'm focusing on raft algorithm more
@@ -15,7 +16,7 @@ pub trait PersistentLocalState {
 // TODO:3 Persist local state to disk, not RAM.
 pub struct VolatileLocalState {
     current_term: Term,
-    voted_for_this_term: Option<String>,
+    voted_for_this_term: Option<ReplicaId>,
 }
 
 impl VolatileLocalState {
@@ -39,7 +40,7 @@ impl PersistentLocalState for VolatileLocalState {
         }
     }
 
-    fn store_vote_for_term_if_unvoted(&mut self, expected_term: Term, vote: String) -> bool {
+    fn store_vote_for_term_if_unvoted(&mut self, expected_term: Term, vote: ReplicaId) -> bool {
         if expected_term == self.current_term {
             if self.voted_for_this_term.is_none() {
                 self.voted_for_this_term.replace(vote);
@@ -56,7 +57,7 @@ impl PersistentLocalState for VolatileLocalState {
         self.current_term
     }
 
-    fn voted_for_current_term(&self) -> (Term, Option<&String>) {
+    fn voted_for_current_term(&self) -> (Term, Option<&ReplicaId>) {
         (self.current_term, self.voted_for_this_term.as_ref())
     }
 }
