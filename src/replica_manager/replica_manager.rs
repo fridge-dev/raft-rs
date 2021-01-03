@@ -1,6 +1,5 @@
 use crate::commitlog::{Entry, Log, LogFactory, LogConfig};
-use crate::replica::{RaftReplica, ReplicaConfig, PersistentLocalState, StateMachine, VolatileLocalState, NoOpStateMachine};
-use std::net::Ipv4Addr;
+use crate::replica::{RaftReplica, ReplicaConfig, PersistentLocalState, StateMachine, VolatileLocalState, NoOpStateMachine, MemberInfo, ReplicaId};
 use std::collections::HashMap;
 
 // A single node should be able to observe (and ultimately participate in)
@@ -9,20 +8,20 @@ use std::collections::HashMap;
 //
 // On a single node, we will only participate at most one replica per cluster.
 pub struct ReplicaManager<L: Log, F: LogFactory<L>, S: PersistentLocalState, M: StateMachine> {
-    me: Ipv4Addr,
+    me: ReplicaId,
     replica_by_cluster_id: HashMap<String, RaftReplica<L, S, M>>,
     log_factory: F,
 }
 
 pub struct ClusterConfig {
-    pub cluster_members: Vec<Ipv4Addr>,
     pub cluster_id: String,
+    pub cluster_members: Vec<MemberInfo>,
 }
 
 impl<L: Log, F: LogFactory<L>, S: PersistentLocalState, M: StateMachine> ReplicaManager<L, F, S, M> {
-    pub fn new(self_ip_addr: Ipv4Addr, log_factory: F) -> Self {
+    pub fn new(my_id: ReplicaId, log_factory: F) -> Self {
         ReplicaManager {
-            me: self_ip_addr,
+            me: my_id,
             replica_by_cluster_id: HashMap::new(),
             log_factory,
         }
@@ -44,7 +43,7 @@ impl<L: Log, F: LogFactory<L>> ReplicaManager<L, F, VolatileLocalState, NoOpStat
         self.replica_by_cluster_id.insert(config.cluster_id, replica);
     }
 
-    fn create_replica(&self, cluster_id: String, cluster_members: Vec<Ipv4Addr>) -> RaftReplica<L, VolatileLocalState, NoOpStateMachine> {
+    fn create_replica(&self, cluster_id: String, cluster_members: Vec<MemberInfo>) -> RaftReplica<L, VolatileLocalState, NoOpStateMachine> {
         let mut log = self.log_factory.try_create_log(LogConfig {
             cluster_id,
         }).expect("fail create log noo");
@@ -57,7 +56,7 @@ impl<L: Log, F: LogFactory<L>> ReplicaManager<L, F, VolatileLocalState, NoOpStat
         }
 
         RaftReplica::new(ReplicaConfig {
-            me: self.me,
+            me: self.me.clone(),
             cluster_members,
             log,
             local_state: VolatileLocalState::new(),

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod api;
 mod commitlog;
 mod replica;

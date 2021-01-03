@@ -1,12 +1,15 @@
 use crate::commitlog::{Log, Index};
-use std::net::Ipv4Addr;
 use crate::replica::election::{ElectionState, FollowerState};
 use crate::replica::state_machine::StateMachine;
 use crate::replica::local_state::PersistentLocalState;
+use crate::replica::peers::MemberInfo;
+use crate::replica::ReplicaId;
+
+pub struct Term(pub u64);
 
 pub struct RaftReplica<L: Log, S: PersistentLocalState, M: StateMachine> {
-    me: Ipv4Addr,
-    cluster_members: Vec<Ipv4Addr>,
+    me: ReplicaId,
+    cluster_members: Vec<MemberInfo>,
     local_state: S,
     election_state: ElectionState,
 
@@ -23,8 +26,8 @@ pub struct RaftReplica<L: Log, S: PersistentLocalState, M: StateMachine> {
 }
 
 pub struct ReplicaConfig<L: Log, S: PersistentLocalState, M: StateMachine> {
-    pub me: Ipv4Addr,
-    pub cluster_members: Vec<Ipv4Addr>,
+    pub me: ReplicaId,
+    pub cluster_members: Vec<MemberInfo>,
     pub log: L,
     pub local_state: S,
     pub state_machine: M,
