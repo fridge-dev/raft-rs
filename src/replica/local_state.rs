@@ -6,7 +6,7 @@ use crate::replica::replica::Term;
 pub trait PersistentLocalState {
     fn store_term_if_increased(&mut self, new_term: Term) -> bool;
     fn store_vote_for_term_if_unvoted(&mut self, expected_term: Term, vote: String) -> bool;
-    fn current_term(&self) -> u64;
+    fn current_term(&self) -> Term;
     fn voted_for_current_term(&self) -> (Term, Option<&String>);
 }
 
@@ -14,7 +14,7 @@ pub trait PersistentLocalState {
 // so than integrating with disk correctly.
 // TODO:3 Persist local state to disk, not RAM.
 pub struct VolatileLocalState {
-    current_term: u64,
+    current_term: Term,
     voted_for_this_term: Option<String>,
 }
 
@@ -52,7 +52,7 @@ impl PersistentLocalState for VolatileLocalState {
         }
     }
 
-    fn current_term(&self) -> u64 {
+    fn current_term(&self) -> Term {
         self.current_term
     }
 

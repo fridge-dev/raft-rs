@@ -1,3 +1,6 @@
+use crate::commitlog::Index;
+use crate::replica::replica::Term;
+
 // We need this internally.
 pub trait RaftRpcHandler {
     fn handle_request_vote(
@@ -11,10 +14,10 @@ pub trait RaftRpcHandler {
 }
 
 pub struct RequestVoteInput {
-    candidate_term: u64,
+    candidate_term: Term,
     candidate_id: String,
-    candidate_last_log_entry_index: u64,
-    candidate_last_log_entry_term: u64,
+    candidate_last_log_entry_index: Index,
+    candidate_last_log_entry_term: Term,
 }
 
 pub struct RequestVoteOutput {
@@ -26,11 +29,11 @@ pub enum RequestVoteError {
 }
 
 pub struct AppendEntriesInput {
-    leader_term: u64,
+    leader_term: Term,
     leader_id: String,
-    leader_previous_log_entry_index: u64,
-    leader_previous_log_entry_term: u64,
-    leader_commit_index: u64,
+    leader_previous_log_entry_index: Index,
+    leader_previous_log_entry_term: Term,
+    leader_commit_index: Index,
 }
 
 pub struct AppendEntriesOutput {
@@ -43,5 +46,5 @@ pub enum AppendEntriesError {
 }
 
 pub struct TermOutOfDateInfo {
-    current_term: u64,
+    current_term: Term,
 }
