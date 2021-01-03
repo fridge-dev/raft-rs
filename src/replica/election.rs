@@ -30,8 +30,8 @@ struct LeaderServerView {
 impl LeaderServerView {
     pub fn new() -> Self {
         LeaderServerView {
-            next: Index(0),
-            matched: Index(0),
+            next: Index::new(0),
+            matched: Index::new(0),
         }
     }
 }

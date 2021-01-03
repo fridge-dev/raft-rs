@@ -5,7 +5,7 @@ use crate::replica::local_state::PersistentLocalState;
 use crate::replica::peers::MemberInfo;
 use crate::replica::ReplicaId;
 
-pub struct Term(pub u64);
+pub type Term = u64;
 
 pub struct RaftReplica<L: Log, S: PersistentLocalState, M: StateMachine> {
     me: ReplicaId,
@@ -43,8 +43,8 @@ impl<L: Log, S: PersistentLocalState, M: StateMachine> RaftReplica<L, S, M> {
             election_state: ElectionState::Follower(FollowerState{}),
             log: config.log,
             latest_index,
-            commit_index: Index(0),
-            last_applied_index: Index(0),
+            commit_index: Index::new(0),
+            last_applied_index: Index::new(0),
             state_machine: config.state_machine,
         }
     }

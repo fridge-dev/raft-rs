@@ -2,7 +2,21 @@ use std::io;
 
 /// Index is an index of an entry in the log; i.e. a log entry's index.
 #[derive(Debug, Copy, Clone)]
-pub struct Index(pub u64);
+pub struct Index(u64);
+
+impl Index {
+    pub fn new(index: u64) -> Self {
+        Index(index)
+    }
+
+    pub fn from(index: usize) -> Self {
+        Index(index as u64)
+    }
+
+    pub fn val(&self) -> u64 {
+        self.0
+    }
+}
 
 /// Log is an append only log intended for use as a replicated commit log in a database.
 pub trait Log {

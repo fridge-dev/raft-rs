@@ -1,7 +1,7 @@
 use crate::{ReplicaManager, ClusterConfig};
 use crate::commitlog::{Log, LogFactory};
 use std::net::Ipv4Addr;
-use crate::replica::{PersistentLocalState, StateMachine, NoOpStateMachine, VolatileLocalState, MemberInfo};
+use crate::replica::{PersistentLocalState, StateMachine, NoOpStateMachine, VolatileLocalState, MemberInfo, ReplicaId};
 
 pub struct GrpcServer<L, F, S, M>
     where
@@ -54,23 +54,23 @@ impl<L, F> GrpcServer<L, F, VolatileLocalState, NoOpStateMachine>
             cluster_id: "helloworld".to_string(),
             cluster_members: vec![
                 MemberInfo {
-                    id: "id-1".into(),
+                    id: ReplicaId("id-1".into()),
                     ip: Ipv4Addr::from(0xFACE),
                 },
                 MemberInfo {
-                    id: "id-2".into(),
+                    id: ReplicaId("id-2".into()),
                     ip: Ipv4Addr::from(0xBEEF),
                 },
                 MemberInfo {
-                    id: "id-3".into(),
+                    id: ReplicaId("id-3".into()),
                     ip: Ipv4Addr::from(0x1337),
                 },
                 MemberInfo {
-                    id: "id-4".into(),
+                    id: ReplicaId("id-4".into()),
                     ip: Ipv4Addr::from(0xDEAF),
                 },
                 MemberInfo {
-                    id: "id-5".into(),
+                    id: ReplicaId("id-5".into()),
                     ip: Ipv4Addr::from(0xBEEB),
                 },
             ],

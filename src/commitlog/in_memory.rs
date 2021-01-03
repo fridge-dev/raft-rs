@@ -21,18 +21,18 @@ impl Log for InMemoryLog {
     fn append(&mut self, entry: Entry) -> Result<Index, io::Error> {
         self.log.push(entry);
 
-        Ok(Index((self.log.len() - 1) as u64))
+        Ok(Index::from(self.log.len() - 1))
     }
 
     fn read(&mut self, index: Index) -> Result<Option<&Entry>, io::Error> {
-        Ok(self.log.get(index.0 as usize))
+        Ok(self.log.get(index.val() as usize))
     }
 
     fn truncate(&mut self, index: Index) {
-        self.log.truncate(index.0 as usize)
+        self.log.truncate(index.val() as usize)
     }
 
     fn next_index(&self) -> Index {
-        Index(self.log.len() as u64)
+        Index::from(self.log.len())
     }
 }
