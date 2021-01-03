@@ -1,7 +1,13 @@
 // We need this internally.
 pub trait RaftRpcHandler {
-    fn handle_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError>;
-    fn handle_append_entries(&mut self, input: AppendEntriesInput) -> Result<AppendEntriesOutput, AppendEntriesError>;
+    fn handle_request_vote(
+        &mut self,
+        input: RequestVoteInput,
+    ) -> Result<RequestVoteOutput, RequestVoteError>;
+    fn handle_append_entries(
+        &mut self,
+        input: AppendEntriesInput,
+    ) -> Result<AppendEntriesOutput, AppendEntriesError>;
 }
 
 pub struct RequestVoteInput {

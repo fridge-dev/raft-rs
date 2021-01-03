@@ -1,8 +1,8 @@
-use crate::commitlog::{Log, Index};
+use crate::commitlog::{Index, Log};
 use crate::replica::election::{ElectionState, FollowerState};
-use crate::replica::state_machine::StateMachine;
 use crate::replica::local_state::PersistentLocalState;
 use crate::replica::peers::MemberInfo;
+use crate::replica::state_machine::StateMachine;
 use crate::replica::ReplicaId;
 
 pub type Term = u64;
@@ -40,7 +40,7 @@ impl<L: Log, S: PersistentLocalState, M: StateMachine> RaftReplica<L, S, M> {
             me: config.me,
             cluster_members: config.cluster_members,
             local_state: config.local_state,
-            election_state: ElectionState::Follower(FollowerState{}),
+            election_state: ElectionState::Follower(FollowerState {}),
             log: config.log,
             latest_index,
             commit_index: Index::new(0),

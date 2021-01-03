@@ -11,7 +11,9 @@ impl ElectionState {
     // for proof of concept
     pub fn cycle(self) -> Self {
         match self {
-            ElectionState::Follower(follower) => ElectionState::Candidate(follower.into_candidate()),
+            ElectionState::Follower(follower) => {
+                ElectionState::Candidate(follower.into_candidate())
+            }
             ElectionState::Candidate(candidate) => ElectionState::Leader(candidate.into_leader()),
             ElectionState::Leader(leader) => ElectionState::Follower(leader.into_follower()),
         }
@@ -39,7 +41,7 @@ impl LeaderServerView {
 impl LeaderState {
     pub fn new(/* peers should be listed here*/) -> Self {
         LeaderState {
-            peer_state: HashMap::new()
+            peer_state: HashMap::new(),
         }
     }
 
@@ -48,9 +50,7 @@ impl LeaderState {
     }
 }
 
-pub struct CandidateState {
-
-}
+pub struct CandidateState {}
 
 impl CandidateState {
     pub fn into_leader(self) -> LeaderState {
@@ -64,9 +64,7 @@ impl CandidateState {
     // into_candidate? split vote?
 }
 
-pub struct FollowerState {
-
-}
+pub struct FollowerState {}
 
 impl FollowerState {
     pub fn into_candidate(self) -> CandidateState {

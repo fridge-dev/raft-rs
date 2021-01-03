@@ -39,8 +39,6 @@ pub struct Entry {
 
 impl Entry {
     pub fn new(data_blob: Vec<u8>) -> Self {
-        Entry {
-            data_blob,
-        }
+        Entry { data_blob }
     }
 }

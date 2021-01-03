@@ -1,6 +1,4 @@
-pub trait StateMachine {
-
-}
+pub trait StateMachine {}
 
 pub struct NoOpStateMachine {
     // nothing
@@ -12,6 +10,4 @@ impl NoOpStateMachine {
     }
 }
 
-impl StateMachine for NoOpStateMachine {
-
-}
+impl StateMachine for NoOpStateMachine {}

@@ -1,4 +1,4 @@
-use crate::commitlog::{Entry, Log, Index};
+use crate::commitlog::{Entry, Index, Log};
 use std::io;
 
 // I am focusing on learning raft's consensus algorithm, not strictly about exactly how to
@@ -6,14 +6,12 @@ use std::io;
 //
 // To improve on this, do something similar to: https://thehoard.blog/how-kafkas-storage-internals-work-3a29b02e026
 pub struct InMemoryLog {
-    log: Vec<Entry>
+    log: Vec<Entry>,
 }
 
 impl InMemoryLog {
     pub fn new() -> Self {
-        InMemoryLog {
-            log: vec![],
-        }
+        InMemoryLog { log: vec![] }
     }
 }
 

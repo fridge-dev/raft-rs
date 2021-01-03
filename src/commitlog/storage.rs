@@ -1,4 +1,4 @@
-use crate::commitlog::{Log, Entry, Index};
+use crate::commitlog::{Entry, Index, Log};
 use std::io::Error;
 
 // Based on https://thehoard.blog/how-kafkas-storage-internals-work-3a29b02e026

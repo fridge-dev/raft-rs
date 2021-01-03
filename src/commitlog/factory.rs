@@ -1,6 +1,6 @@
-use crate::commitlog::{Log, InMemoryLog};
-use std::io;
 use crate::commitlog::storage::{SegmentedDiskLog, StorageConfig};
+use crate::commitlog::{InMemoryLog, Log};
+use std::io;
 
 // -- Log factory --
 pub trait LogFactory<L: Log> {
@@ -29,9 +29,7 @@ impl LogFactory<InMemoryLog> for InMemoryLogFactory {
 
 // -- SegmentedDiskLogFactory --
 
-pub struct SegmentedDiskLogFactory {
-
-}
+pub struct SegmentedDiskLogFactory {}
 
 impl LogFactory<SegmentedDiskLog> for SegmentedDiskLogFactory {
     fn try_create_log(&self, config: LogConfig) -> Result<SegmentedDiskLog, io::Error> {
