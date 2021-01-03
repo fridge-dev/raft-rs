@@ -1,9 +1,16 @@
 use crate::{ReplicaManager, ClusterConfig};
 use crate::commitlog::{Log, LogFactory};
 use std::net::Ipv4Addr;
+use crate::replica::{PersistentLocalState, StateMachine, NoOpStateMachine, VolatileLocalState};
 
-pub struct GrpcServer<L, F> where L: Log, F: LogFactory<L> {
-    replica_manager: ReplicaManager<L, F>,
+pub struct GrpcServer<L, F, S, M>
+    where
+        L: Log,
+        F: LogFactory<L>,
+        S: PersistentLocalState,
+        M: StateMachine
+{
+    replica_manager: ReplicaManager<L, F, S, M>,
 
 
     // Single gRPC server with these RPCs:
@@ -23,13 +30,25 @@ pub struct GrpcServer<L, F> where L: Log, F: LogFactory<L> {
     // Delete({cluster_id}, key)
 }
 
-impl<L, F> GrpcServer<L, F> where L: Log, F: LogFactory<L> {
-    pub fn new(replica_manager: ReplicaManager<L, F>) -> Self {
+impl<L, F, S, M> GrpcServer<L, F, S, M>
+    where
+        L: Log,
+        F: LogFactory<L>,
+        S: PersistentLocalState,
+        M: StateMachine
+{
+    pub fn new(replica_manager: ReplicaManager<L, F, S, M>) -> Self {
         GrpcServer {
             replica_manager
         }
     }
+}
 
+impl<L, F> GrpcServer<L, F, VolatileLocalState, NoOpStateMachine>
+    where
+        L: Log,
+        F: LogFactory<L>,
+{
     pub fn run(mut self) {
         self.replica_manager.observe_cluster(ClusterConfig {
             cluster_members: vec![
