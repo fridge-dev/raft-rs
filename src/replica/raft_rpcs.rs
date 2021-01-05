@@ -27,6 +27,7 @@ pub struct RequestVoteOutput {
 
 pub enum RequestVoteError {
     RequestTermOutOfDate(TermOutOfDateInfo),
+    CandidateNotInCluster,
 }
 
 pub struct AppendEntriesInput {

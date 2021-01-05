@@ -1,6 +1,6 @@
 use crate::commitlog::Index;
-use std::collections::HashMap;
 use crate::ReplicaId;
+use std::collections::HashMap;
 
 pub enum ElectionState {
     Leader(LeaderState),
@@ -17,6 +17,16 @@ impl ElectionState {
             }
             ElectionState::Candidate(candidate) => ElectionState::Leader(candidate.into_leader()),
             ElectionState::Leader(leader) => ElectionState::Follower(leader.into_follower()),
+        }
+    }
+
+    pub fn into_follower(self) -> Self {
+        match self {
+            ElectionState::Leader(leader) => ElectionState::Follower(leader.into_follower()),
+            ElectionState::Candidate(candidate) => {
+                ElectionState::Follower(candidate.into_follower())
+            }
+            ElectionState::Follower(follower) => ElectionState::Follower(follower),
         }
     }
 }
