@@ -1,5 +1,5 @@
 use crate::commitlog::{Index, Log};
-use crate::replica::election::{ElectionState, FollowerState};
+use crate::replica::election::ElectionState;
 use crate::replica::local_state::PersistentLocalState;
 use crate::replica::peers::MemberInfo;
 use crate::replica::raft_rpcs::{
@@ -49,7 +49,7 @@ impl<L: Log, S: PersistentLocalState, M: StateMachine> RaftReplica<L, S, M> {
             me: config.me,
             cluster_members,
             local_state: config.local_state,
-            election_state: ElectionState::Follower(FollowerState {}),
+            election_state: ElectionState::new_follower(),
             log: config.log,
             latest_index,
             commit_index: Index::new(0),
@@ -92,8 +92,7 @@ impl<L: Log, S: PersistentLocalState, M: StateMachine> RaftRpcHandler for RaftRe
             .local_state
             .store_term_if_increased(input.candidate_term);
         if increased {
-            // TODO:1 fix state transitions
-            self.election_state = self.election_state.into_follower();
+            self.election_state.transition_to_follower();
             // TODO:1 other steps??
         }
 
