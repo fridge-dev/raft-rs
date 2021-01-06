@@ -45,7 +45,7 @@ where
             .expect("that shit can't fail");
 
         let replica = RaftReplica::new(ReplicaConfig {
-            me: my_replica_id,
+            my_replica_id,
             cluster_members: cluster_config.cluster_members,
             log,
             local_state: VolatileLocalState::new(),

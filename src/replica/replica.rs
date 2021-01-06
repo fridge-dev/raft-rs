@@ -1,7 +1,7 @@
 use crate::commitlog::{Index, Log};
-use crate::replica::commit_log::RaftLogEntry;
+use crate::replica::commit_log::{RaftLogEntry, CommitLog};
 use crate::replica::election::ElectionState;
-use crate::replica::local_state::PersistentLocalState;
+use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peers::MemberInfo;
 use crate::replica::raft_rpcs::{
     AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, RaftRpcHandler, RequestVoteError,
@@ -12,15 +12,13 @@ use crate::replica::ReplicaId;
 use std::collections::HashMap;
 use std::hash::Hash;
 
-pub type Term = u64;
-
 pub struct ReplicaConfig<L, S, M>
 where
     L: Log<RaftLogEntry>,
     S: PersistentLocalState,
     M: StateMachine,
 {
-    pub me: ReplicaId,
+    pub my_replica_id: ReplicaId,
     pub cluster_members: Vec<MemberInfo>,
     pub log: L,
     pub local_state: S,
@@ -33,20 +31,11 @@ where
     S: PersistentLocalState,
     M: StateMachine,
 {
-    me: ReplicaId,
+    my_replica_id: ReplicaId,
     cluster_members: HashMap<ReplicaId, MemberInfo>,
     local_state: S,
     election_state: ElectionState,
-
-    // This is the log that we're replicating.
-    log: L,
-    // Index of highest log entry that we've locally written.
-    latest_index: Index, // TODO: is this needed??
-    // Index of highest log entry known to be committed.
-    commit_index: Index,
-    // Index of highest log entry applied to state machine.
-    last_applied_index: Index,
-    // User provided state machine for applying log entries.
+    commit_log: CommitLog<L>,
     state_machine: M,
 }
 
@@ -57,18 +46,15 @@ where
     M: StateMachine,
 {
     pub fn new(config: ReplicaConfig<L, S, M>) -> Self {
-        let latest_index = config.log.next_index();
+        let commit_log = CommitLog::new(config.log);
         let cluster_members = map_with_unique_index(config.cluster_members, |m| m.id.clone())
             .expect("Cluster members have duplicate ReplicaId.");
         RaftReplica {
-            me: config.me,
+            my_replica_id: config.my_replica_id,
             cluster_members,
             local_state: config.local_state,
             election_state: ElectionState::new_follower(),
-            log: config.log,
-            latest_index,
-            commit_index: Index::new(0),
-            last_applied_index: Index::new(0),
+            commit_log,
             state_machine: config.state_machine,
         }
     }
@@ -79,9 +65,15 @@ where
     // > the log with the later term is more up-to-date. If the logs
     // > end with the same term, then whichever log is longer is
     // > more up-to-date.
-    fn is_candidate_more_up_to_date_than_me(&self) -> bool {
-        // TODO:1 impl logic
-        false
+    fn is_candidate_more_up_to_date_than_me(&self, candidate_last_entry_term: Term, candidate_last_entry_index: Index) -> bool {
+        let (my_last_entry_term, my_last_entry_index) = self.commit_log.latest_entry();
+        if candidate_last_entry_term > my_last_entry_term {
+            return true;
+        } else if candidate_last_entry_term < my_last_entry_term {
+            return false;
+        }
+
+        candidate_last_entry_index > my_last_entry_index
     }
 }
 
@@ -95,6 +87,11 @@ where
         &mut self,
         input: RequestVoteInput,
     ) -> Result<RequestVoteOutput, RequestVoteError> {
+        // Ensure candidate is known member.
+        if !self.cluster_members.contains_key(&input.candidate_id) {
+            return Err(RequestVoteError::CandidateNotInCluster);
+        }
+
         let current_term = self.local_state.current_term();
         if input.candidate_term < current_term {
             return Err(RequestVoteError::RequestTermOutOfDate(TermOutOfDateInfo {
@@ -102,18 +99,13 @@ where
             }));
         }
 
-        // Ensure candidate is known member.
-        if !self.cluster_members.contains_key(&input.candidate_id) {
-            return Err(RequestVoteError::CandidateNotInCluster);
-        }
-
-        // Update local state if we are observing a larger term.
+        // > If RPC request or response contains term T > currentTerm:
+        // > set currentTerm = T, convert to follower (§5.1)
         let increased = self
             .local_state
             .store_term_if_increased(input.candidate_term);
         if increased {
             self.election_state.transition_to_follower();
-            // TODO:1 other steps??
         }
 
         // > If votedFor is null or candidateId, and candidate’s log is at
@@ -133,7 +125,7 @@ where
         }
 
         // ...and candidate’s log is at least as up-to-date as receiver’s log...
-        if !self.is_candidate_more_up_to_date_than_me() {
+        if !self.is_candidate_more_up_to_date_than_me(input.candidate_last_log_entry_term, input.candidate_last_log_entry_index) {
             return Ok(RequestVoteOutput {
                 vote_granted: false,
             });
@@ -153,13 +145,6 @@ where
         // If term changed due to race condition with disk, then frick, but everyone else will
         // reject this candidate as out of date eventually, so this should be fine.
         Ok(RequestVoteOutput { vote_granted: true })
-
-        // TODO:1 what to do about this?
-        // > If RPC request or response contains term T > currentTerm:
-        // > set currentTerm = T, convert to follower (§5.1)
-
-        // > If commitIndex > lastApplied: increment lastApplied, apply
-        // > log[lastApplied] to state machine (§5.3) ???
     }
 
     fn handle_append_entries(

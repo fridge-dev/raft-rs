@@ -1,5 +1,13 @@
-use crate::replica::replica::Term;
 use crate::ReplicaId;
+
+#[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
+pub struct Term(u64);
+
+impl Term {
+    pub fn new(term: u64) -> Self {
+        Term(term)
+    }
+}
 
 /// PersistentLocalState is used whenever the raft spec requires that something is persisted to a
 /// durable store to guarantee safety. Not everything that uses disk has to go through this, only
@@ -22,7 +30,7 @@ pub struct VolatileLocalState {
 impl VolatileLocalState {
     pub fn new(/* This will need ClusterId for directory namespace */) -> Self {
         VolatileLocalState {
-            current_term: 0,
+            current_term: Term::new(0),
             voted_for_this_term: None,
         }
     }

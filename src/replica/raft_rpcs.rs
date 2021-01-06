@@ -1,5 +1,5 @@
 use crate::commitlog::Index;
-use crate::replica::replica::Term;
+use crate::replica::local_state::Term;
 use crate::ReplicaId;
 
 // We need this internally.

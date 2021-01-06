@@ -1,7 +1,7 @@
 use std::io;
 
 /// Index is an index of an entry in the log; i.e. a log entry's index.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
 pub struct Index(u64);
 
 impl Index {
