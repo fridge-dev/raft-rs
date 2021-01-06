@@ -9,3 +9,8 @@ pub struct MemberInfo {
     pub id: ReplicaId,
     pub ip: Ipv4Addr,
 }
+
+pub struct ClusterConfig {
+    pub cluster_id: String,
+    pub cluster_members: Vec<MemberInfo>,
+}

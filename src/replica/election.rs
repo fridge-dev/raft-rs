@@ -11,18 +11,17 @@ impl ElectionState {
     /// `new_follower()` creates a new ElectionState instance that starts out as a follower.
     pub fn new_follower() -> Self {
         ElectionState {
-            state: Some(State::Follower(FollowerState {}))
+            state: Some(State::Follower(FollowerState {})),
         }
     }
 
     pub fn transition_to_follower(&mut self) {
-        self.do_transition(|state| {
-            state.into_follower()
-        });
+        self.do_transition(|state| state.into_follower());
     }
 
     fn do_transition(&mut self, transition: fn(State) -> State) {
-        let mut state = self.state
+        let mut state = self
+            .state
             .take()
             .expect("Illegal state: ElectionStateManager has None inner state.");
 
@@ -42,9 +41,7 @@ impl State {
     pub fn into_follower(self) -> Self {
         match self {
             State::Leader(leader) => State::Follower(leader.into_follower()),
-            State::Candidate(candidate) => {
-                State::Follower(candidate.into_follower())
-            }
+            State::Candidate(candidate) => State::Follower(candidate.into_follower()),
             State::Follower(follower) => State::Follower(follower),
         }
     }

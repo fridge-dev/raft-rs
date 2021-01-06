@@ -1,4 +1,5 @@
 use crate::commitlog::{Index, Log};
+use crate::replica::commit_log::RaftLogEntry;
 use crate::replica::election::ElectionState;
 use crate::replica::local_state::PersistentLocalState;
 use crate::replica::peers::MemberInfo;
@@ -13,7 +14,25 @@ use std::hash::Hash;
 
 pub type Term = u64;
 
-pub struct RaftReplica<L: Log, S: PersistentLocalState, M: StateMachine> {
+pub struct ReplicaConfig<L, S, M>
+where
+    L: Log<RaftLogEntry>,
+    S: PersistentLocalState,
+    M: StateMachine,
+{
+    pub me: ReplicaId,
+    pub cluster_members: Vec<MemberInfo>,
+    pub log: L,
+    pub local_state: S,
+    pub state_machine: M,
+}
+
+pub struct RaftReplica<L, S, M>
+where
+    L: Log<RaftLogEntry>,
+    S: PersistentLocalState,
+    M: StateMachine,
+{
     me: ReplicaId,
     cluster_members: HashMap<ReplicaId, MemberInfo>,
     local_state: S,
@@ -31,19 +50,15 @@ pub struct RaftReplica<L: Log, S: PersistentLocalState, M: StateMachine> {
     state_machine: M,
 }
 
-pub struct ReplicaConfig<L: Log, S: PersistentLocalState, M: StateMachine> {
-    pub me: ReplicaId,
-    pub cluster_members: Vec<MemberInfo>,
-    pub log: L,
-    pub local_state: S,
-    pub state_machine: M,
-}
-
-impl<L: Log, S: PersistentLocalState, M: StateMachine> RaftReplica<L, S, M> {
+impl<L, S, M> RaftReplica<L, S, M>
+where
+    L: Log<RaftLogEntry>,
+    S: PersistentLocalState,
+    M: StateMachine,
+{
     pub fn new(config: ReplicaConfig<L, S, M>) -> Self {
         let latest_index = config.log.next_index();
         let cluster_members = map_with_unique_index(config.cluster_members, |m| m.id.clone())
-            // TODO propagate Result upward
             .expect("Cluster members have duplicate ReplicaId.");
         RaftReplica {
             me: config.me,
@@ -70,7 +85,12 @@ impl<L: Log, S: PersistentLocalState, M: StateMachine> RaftReplica<L, S, M> {
     }
 }
 
-impl<L: Log, S: PersistentLocalState, M: StateMachine> RaftRpcHandler for RaftReplica<L, S, M> {
+impl<L, S, M> RaftRpcHandler for RaftReplica<L, S, M>
+where
+    L: Log<RaftLogEntry>,
+    S: PersistentLocalState,
+    M: StateMachine,
+{
     fn handle_request_vote(
         &mut self,
         input: RequestVoteInput,

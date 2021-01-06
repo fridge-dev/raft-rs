@@ -5,25 +5,25 @@ use std::io;
 // persist the data durably. I will theoretically model it here.
 //
 // To improve on this, do something similar to: https://thehoard.blog/how-kafkas-storage-internals-work-3a29b02e026
-pub struct InMemoryLog {
-    log: Vec<Entry>,
+pub struct InMemoryLog<E: Entry> {
+    log: Vec<E>,
 }
 
-impl InMemoryLog {
+impl<E: Entry> InMemoryLog<E> {
     pub fn new() -> Self {
         InMemoryLog { log: vec![] }
     }
 }
 
-impl Log for InMemoryLog {
-    fn append(&mut self, entry: Entry) -> Result<Index, io::Error> {
+impl<E: Entry> Log<E> for InMemoryLog<E> {
+    fn append(&mut self, entry: E) -> Result<Index, io::Error> {
         self.log.push(entry);
 
         Ok(Index::from(self.log.len() - 1))
     }
 
-    fn read(&mut self, index: Index) -> Result<Option<&Entry>, io::Error> {
-        Ok(self.log.get(index.val() as usize))
+    fn read(&mut self, index: Index) -> Result<Option<E>, io::Error> {
+        Ok(self.log.get(index.val() as usize).cloned())
     }
 
     fn truncate(&mut self, index: Index) {
