@@ -1,7 +1,7 @@
 use std::io;
 
 /// Index is an index of an entry in the log; i.e. a log entry's index.
-#[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Ord, Eq)]
 pub struct Index(u64);
 
 impl Index {
@@ -16,6 +16,14 @@ impl Index {
     pub fn val(&self) -> u64 {
         self.0
     }
+
+    pub fn incr(&mut self, delta: u64) {
+        self.0 += delta;
+    }
+
+    pub fn decr(&mut self, delta: u64) {
+        self.0 -= delta;
+    }
 }
 
 /// Log is an append only log intended for use as a replicated commit log in a database.
@@ -24,8 +32,10 @@ pub trait Log<E: Entry> {
     /// the log entry index that was just used to append the entry.
     fn append(&mut self, entry: E) -> Result<Index, io::Error>;
 
-    fn read(&mut self, index: Index) -> Result<Option<E>, io::Error>;
+    /// Read log entry at specified index.
+    fn read(&self, index: Index) -> Result<Option<E>, io::Error>;
 
+    /// Soft-deletes anything starting at `index` and later.
     fn truncate(&mut self, index: Index);
 
     /// next_index returns the next index that will be used to append an entry.

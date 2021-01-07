@@ -22,7 +22,7 @@ impl<E: Entry> Log<E> for InMemoryLog<E> {
         Ok(Index::from(self.log.len() - 1))
     }
 
-    fn read(&mut self, index: Index) -> Result<Option<E>, io::Error> {
+    fn read(&self, index: Index) -> Result<Option<E>, io::Error> {
         Ok(self.log.get(index.val() as usize).cloned())
     }
 

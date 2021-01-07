@@ -7,6 +7,10 @@ impl Term {
     pub fn new(term: u64) -> Self {
         Term(term)
     }
+
+    pub fn into_inner(self) -> u64 {
+        self.0
+    }
 }
 
 /// PersistentLocalState is used whenever the raft spec requires that something is persisted to a

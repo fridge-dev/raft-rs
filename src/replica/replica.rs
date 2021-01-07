@@ -11,6 +11,8 @@ use crate::replica::state_machine::StateMachine;
 use crate::replica::ReplicaId;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::cmp;
+use bytes::Bytes;
 
 pub struct ReplicaConfig<L, S, M>
 where
@@ -92,6 +94,7 @@ where
             return Err(RequestVoteError::CandidateNotInCluster);
         }
 
+        // 1. Reply false if term < currentTerm (§5.1)
         let current_term = self.local_state.current_term();
         if input.candidate_term < current_term {
             return Err(RequestVoteError::RequestTermOutOfDate(TermOutOfDateInfo {
@@ -108,8 +111,8 @@ where
             self.election_state.transition_to_follower();
         }
 
-        // > If votedFor is null or candidateId, and candidate’s log is at
-        // > least as up-to-date as receiver’s log, grant vote (§5.2, §5.4).
+        // 2. If votedFor is null or candidateId, and candidate’s log is at
+        // least as up-to-date as receiver’s log, grant vote (§5.2, §5.4).
 
         // If votedFor is null or candidateId, and...
         let (_, opt_voted_for) = self.local_state.voted_for_current_term(); // TODO:1 replace method
@@ -149,9 +152,96 @@ where
 
     fn handle_append_entries(
         &mut self,
-        _input: AppendEntriesInput,
+        input: AppendEntriesInput,
     ) -> Result<AppendEntriesOutput, AppendEntriesError> {
-        unimplemented!()
+        // 0. Ensure candidate is known member.
+        if !self.cluster_members.contains_key(&input.leader_id) {
+            return Err(AppendEntriesError::ClientNotInCluster);
+        }
+
+        // 1. Reply false if term < currentTerm (§5.1)
+        let current_term = self.local_state.current_term();
+        if input.leader_term < current_term {
+            return Err(AppendEntriesError::ClientTermOutOfDate(TermOutOfDateInfo {
+                current_term,
+            }));
+        }
+
+        // > If RPC request or response contains term T > currentTerm:
+        // > set currentTerm = T, convert to follower (§5.1)
+        let increased = self
+            .local_state
+            .store_term_if_increased(input.leader_term);
+        if increased {
+            self.election_state.transition_to_follower();
+        }
+
+        // 2. Reply false if [my] log doesn't contain an entry at [leader's]
+        // prevLogIndex whose term matches [leader's] prevLogTerm (§5.3)
+        let me_missing_entry = match self.commit_log.read(input.leader_previous_log_entry_index) {
+            Ok(Some(my_previous_log_entry)) => Ok(my_previous_log_entry.term != input.leader_previous_log_entry_term),
+            Ok(None) => Ok(true),
+            Err(e) => Err(AppendEntriesError::ServerIoError(e)),
+        }?;
+        if me_missing_entry {
+            // 3. If [my] existing entry conflicts with [leader's] (same index
+            // but different terms), delete [my] existing entry and all that
+            // follow it (§5.3)
+            self.commit_log.rewind_single_entry();
+            return Err(AppendEntriesError::ServerMissingPreviousLogEntry);
+        }
+
+        // 4. Append any new entries not already in the log
+        let opt_index_of_last_new_entry = input.entries.last().map(|last_entry| last_entry.index);
+        self.commit_log
+            .append(input.entries)
+            .map_err(|e| AppendEntriesError::ServerIoError(e))?;
+
+        // 5. If leaderCommit > commitIndex, set commitIndex =
+        // min(leaderCommit, index of last new entry)
+        if input.leader_commit_index > self.commit_log.commit_index {
+            // TODO:1 wtf to do if entries was empty?? Paper doesn't state this. Formal spec probably does though.
+            //        For now, assuming it's safe to update. Eventually, read spec to confirm.
+            let new_commit_index = match opt_index_of_last_new_entry {
+                Some(index_of_last_new_entry) => cmp::min(input.leader_commit_index, index_of_last_new_entry),
+                None => input.leader_commit_index,
+            };
+
+            // Sanity check because I'm uncertain. Re-read paper/spec.
+            let (_, my_last_entry_index) = self.commit_log.latest_entry();
+            assert!(new_commit_index <= my_last_entry_index, "Raft paper has failed me.");
+
+            self.commit_log.commit_index = new_commit_index;
+        }
+
+        let output = Ok(AppendEntriesOutput {});
+
+        // > If commitIndex > lastApplied: increment lastApplied, apply
+        // > log[lastApplied] to state machine (§5.3)
+        while self.commit_log.last_applied_index < self.commit_log.commit_index {
+            let mut next_index = self.commit_log.last_applied_index;
+            next_index.incr(1);
+
+            // TODO:2 implement batch/streamed read.
+            let entry = match self.commit_log.read(next_index) {
+                Ok(Some(entry)) => entry,
+                Ok(None) => {
+                    // TODO:2 validate and/or gracefully handle.
+                    panic!("This should never happen #5230185123");
+                }
+                Err(_) => {
+                    // We've already persisted the log. Applying committed logs is not on critical
+                    // path. We can wait to retry next time.
+                    // TODO:5 add logging/metrics. This is a dropped error.
+                    return output;
+                }
+            };
+
+            let _ = self.state_machine.apply_committed_entry(Bytes::from(entry.data));
+            self.commit_log.last_applied_index = next_index;
+        }
+
+        return output;
     }
 }
 
