@@ -2,10 +2,10 @@
 //! might seem odd. But I plan to move the commitlog mod into its own crate/repo, at which point
 //! this abstraction will make more sense.
 
-use crate::commitlog::{Entry, Log, Index};
+use crate::commitlog::{Entry, Index, Log};
 use crate::replica::local_state::Term;
-use std::io;
 use crate::replica::raft_rpcs::LeaderLogEntry;
+use std::io;
 
 pub struct CommitLog<L: Log<RaftLogEntry>> {
     // This is the log that we're replicating.
@@ -60,12 +60,12 @@ impl<L: Log<RaftLogEntry>> CommitLog<L> {
                 // TODO:3 handle error properly or prevent it from being possible.
                 // TODO:3 if can't, validate this is safe.
                 self.term_of_latest_entry = Term::new(0);
-            },
+            }
             Err(_) => {
                 // TODO:3 handle error properly or prevent it from being possible.
                 // TODO:3 if can't, validate this is safe.
                 self.term_of_latest_entry = Term::new(0);
-            },
+            }
         }
     }
 
@@ -93,7 +93,7 @@ impl<L: Log<RaftLogEntry>> CommitLog<L> {
                     assert_eq!(appended_index, next_entry.index, "FRICK2. This is NOT GOOD. We attempted to append log from leader even though we don't have next log. We are bug!");
                     last_appended_index = appended_index;
                     last_appended_term = next_entry.term;
-                },
+                }
                 Err(e) => {
                     // Revert log to original state then return err.
                     // TODO:2 validate invariants via post-condition

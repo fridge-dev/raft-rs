@@ -1,9 +1,9 @@
 use crate::commitlog::Index;
 use crate::replica::local_state::Term;
 use crate::ReplicaId;
-use std::net::Ipv4Addr;
 use std::error::Error;
 use std::io;
+use std::net::Ipv4Addr;
 
 // For external application to call into this library. Idk. I'm still trying to figure this out.
 pub trait RaftClientApi {

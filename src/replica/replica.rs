@@ -1,5 +1,5 @@
 use crate::commitlog::{Index, Log};
-use crate::replica::commit_log::{RaftLogEntry, CommitLog};
+use crate::replica::commit_log::{CommitLog, RaftLogEntry};
 use crate::replica::election::ElectionState;
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peers::MemberInfo;
@@ -9,10 +9,10 @@ use crate::replica::raft_rpcs::{
 };
 use crate::replica::state_machine::StateMachine;
 use crate::replica::ReplicaId;
+use bytes::Bytes;
+use std::cmp;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::cmp;
-use bytes::Bytes;
 
 pub struct ReplicaConfig<L, S, M>
 where
@@ -67,7 +67,11 @@ where
     // > the log with the later term is more up-to-date. If the logs
     // > end with the same term, then whichever log is longer is
     // > more up-to-date.
-    fn is_candidate_more_up_to_date_than_me(&self, candidate_last_entry_term: Term, candidate_last_entry_index: Index) -> bool {
+    fn is_candidate_more_up_to_date_than_me(
+        &self,
+        candidate_last_entry_term: Term,
+        candidate_last_entry_index: Index,
+    ) -> bool {
         let (my_last_entry_term, my_last_entry_index) = self.commit_log.latest_entry();
         if candidate_last_entry_term > my_last_entry_term {
             return true;
@@ -128,7 +132,10 @@ where
         }
 
         // ...and candidate’s log is at least as up-to-date as receiver’s log...
-        if !self.is_candidate_more_up_to_date_than_me(input.candidate_last_log_entry_term, input.candidate_last_log_entry_index) {
+        if !self.is_candidate_more_up_to_date_than_me(
+            input.candidate_last_log_entry_term,
+            input.candidate_last_log_entry_index,
+        ) {
             return Ok(RequestVoteOutput {
                 vote_granted: false,
             });
@@ -169,9 +176,7 @@ where
 
         // > If RPC request or response contains term T > currentTerm:
         // > set currentTerm = T, convert to follower (§5.1)
-        let increased = self
-            .local_state
-            .store_term_if_increased(input.leader_term);
+        let increased = self.local_state.store_term_if_increased(input.leader_term);
         if increased {
             self.election_state.transition_to_follower();
         }
@@ -179,7 +184,9 @@ where
         // 2. Reply false if [my] log doesn't contain an entry at [leader's]
         // prevLogIndex whose term matches [leader's] prevLogTerm (§5.3)
         let me_missing_entry = match self.commit_log.read(input.leader_previous_log_entry_index) {
-            Ok(Some(my_previous_log_entry)) => Ok(my_previous_log_entry.term != input.leader_previous_log_entry_term),
+            Ok(Some(my_previous_log_entry)) => {
+                Ok(my_previous_log_entry.term != input.leader_previous_log_entry_term)
+            }
             Ok(None) => Ok(true),
             Err(e) => Err(AppendEntriesError::ServerIoError(e)),
         }?;
@@ -203,13 +210,18 @@ where
             // TODO:1 wtf to do if entries was empty?? Paper doesn't state this. Formal spec probably does though.
             //        For now, assuming it's safe to update. Eventually, read spec to confirm.
             let new_commit_index = match opt_index_of_last_new_entry {
-                Some(index_of_last_new_entry) => cmp::min(input.leader_commit_index, index_of_last_new_entry),
+                Some(index_of_last_new_entry) => {
+                    cmp::min(input.leader_commit_index, index_of_last_new_entry)
+                }
                 None => input.leader_commit_index,
             };
 
             // Sanity check because I'm uncertain. Re-read paper/spec.
             let (_, my_last_entry_index) = self.commit_log.latest_entry();
-            assert!(new_commit_index <= my_last_entry_index, "Raft paper has failed me.");
+            assert!(
+                new_commit_index <= my_last_entry_index,
+                "Raft paper has failed me."
+            );
 
             self.commit_log.commit_index = new_commit_index;
         }
@@ -237,7 +249,9 @@ where
                 }
             };
 
-            let _ = self.state_machine.apply_committed_entry(Bytes::from(entry.data));
+            let _ = self
+                .state_machine
+                .apply_committed_entry(Bytes::from(entry.data));
             self.commit_log.last_applied_index = next_index;
         }
 
