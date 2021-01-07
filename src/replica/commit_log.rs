@@ -45,6 +45,10 @@ impl<L: Log<RaftLogEntry>> CommitLog<L> {
         self.log.read(index)
     }
 
+    pub fn next_index(&self) -> Index {
+        self.log.next_index()
+    }
+
     // note: unsure about delta type
     pub fn rewind_single_entry(&mut self) {
         // Removes exactly just the latest entry

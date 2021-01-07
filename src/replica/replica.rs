@@ -1,13 +1,14 @@
 use crate::commitlog::{Index, Log};
 use crate::replica::commit_log::{CommitLog, RaftLogEntry};
-use crate::replica::election::ElectionState;
+use crate::replica::election::{CurrentLeader, ElectionState};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peers::MemberInfo;
 use crate::replica::raft_rpcs::{
-    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, RaftRpcHandler, RequestVoteError,
-    RequestVoteInput, RequestVoteOutput, TermOutOfDateInfo,
+    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, LeaderLogEntry, RaftClientApi,
+    RaftRpcHandler, RequestVoteError, RequestVoteInput, RequestVoteOutput, TermOutOfDateInfo,
+    WriteToLogError, WriteToLogInput, WriteToLogOutput,
 };
-use crate::replica::state_machine::StateMachine;
+use crate::replica::state_machine::{StateMachine, StateMachineOutput};
 use crate::replica::ReplicaId;
 use bytes::Bytes;
 use std::cmp;
@@ -256,6 +257,65 @@ where
         }
 
         return output;
+    }
+}
+
+impl<L, S, M> RaftClientApi for RaftReplica<L, S, M>
+where
+    L: Log<RaftLogEntry>,
+    S: PersistentLocalState,
+    M: StateMachine,
+{
+    fn write_to_log(
+        &mut self,
+        input: WriteToLogInput,
+    ) -> Result<WriteToLogOutput, WriteToLogError> {
+        // Leader check
+        match self.election_state.current_leader() {
+            CurrentLeader::Me => { /* carry on */ }
+            CurrentLeader::Other(leader_id) => match self.cluster_members.get(&leader_id) {
+                Some(leader) => {
+                    return Err(WriteToLogError::FollowerRedirect {
+                        leader_id,
+                        leader_ip: leader.ip,
+                    });
+                }
+                None => {
+                    return Err(WriteToLogError::NoLeader);
+                }
+            },
+            CurrentLeader::Unknown => {
+                return Err(WriteToLogError::NoLeader);
+            }
+        }
+
+        // > If command received from client: append entry to local log,
+        // > respond after entry applied to state machine (§5.3)
+        let term = self.local_state.current_term();
+        let index = self.commit_log.next_index();
+        // TODO:1 leader needs own API
+        let new_entry = LeaderLogEntry {
+            term,
+            index,
+            data: input.data.clone(),
+        };
+        self.commit_log
+            .append(vec![new_entry])
+            .map_err(|e| WriteToLogError::LocalIoError(e))?;
+
+        // TODO:2 (after gRPC setup and threading/timers) replicate entries
+        let applier_outcome = match self
+            .state_machine
+            .apply_committed_entry(Bytes::from(input.data))
+        {
+            StateMachineOutput::Data(outcome) => outcome,
+            StateMachineOutput::NoData => Bytes::new(),
+        };
+
+        Ok(WriteToLogOutput {
+            // TODO:2 decide on byte repr of Vec<u8> vs Bytes. This is wasteful.
+            applier_outcome: applier_outcome.to_vec(),
+        })
     }
 }
 

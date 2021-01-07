@@ -11,7 +11,23 @@ impl ElectionState {
     /// `new_follower()` creates a new ElectionState instance that starts out as a follower.
     pub fn new_follower() -> Self {
         ElectionState {
-            state: Some(State::Follower(FollowerState {})),
+            state: Some(State::Follower(FollowerState::new())),
+        }
+    }
+
+    pub fn current_leader(&self) -> CurrentLeader {
+        let state = self
+            .state
+            .as_ref()
+            .expect("Illegal state: ElectionStateManager has None inner state.");
+        match state {
+            State::Leader(_) => CurrentLeader::Me,
+            State::Candidate(_) => CurrentLeader::Unknown,
+            State::Follower(FollowerState { leader: None, .. }) => CurrentLeader::Unknown,
+            State::Follower(FollowerState {
+                leader: Some(leader_id),
+                ..
+            }) => CurrentLeader::Other(leader_id.clone()),
         }
     }
 
@@ -31,6 +47,12 @@ impl ElectionState {
     }
 }
 
+pub enum CurrentLeader {
+    Me,
+    Other(ReplicaId),
+    Unknown,
+}
+
 enum State {
     Leader(LeaderState),
     Candidate(CandidateState),
@@ -47,7 +69,7 @@ impl State {
     }
 }
 
-pub struct LeaderState {
+struct LeaderState {
     peer_state: HashMap<ReplicaId, LeaderServerView>,
 }
 
@@ -66,18 +88,18 @@ impl LeaderServerView {
 }
 
 impl LeaderState {
-    pub fn new(/* peers should be listed here*/) -> Self {
+    pub fn new(/* TODO:1 peers should be listed here*/) -> Self {
         LeaderState {
             peer_state: HashMap::new(),
         }
     }
 
     pub fn into_follower(self) -> FollowerState {
-        FollowerState {}
+        FollowerState::new()
     }
 }
 
-pub struct CandidateState {}
+struct CandidateState {}
 
 impl CandidateState {
     pub fn into_leader(self) -> LeaderState {
@@ -85,15 +107,22 @@ impl CandidateState {
     }
 
     pub fn into_follower(self) -> FollowerState {
-        FollowerState {}
+        FollowerState::new()
     }
 
     // into_candidate? split vote?
 }
 
-pub struct FollowerState {}
+struct FollowerState {
+    leader: Option<ReplicaId>,
+}
 
 impl FollowerState {
+    // TODO:1 transition to follower with known leader
+    pub fn new() -> Self {
+        FollowerState { leader: None }
+    }
+
     pub fn into_candidate(self) -> CandidateState {
         CandidateState {}
     }

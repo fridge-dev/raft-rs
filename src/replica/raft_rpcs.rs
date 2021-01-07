@@ -7,7 +7,8 @@ use std::net::Ipv4Addr;
 
 // For external application to call into this library. Idk. I'm still trying to figure this out.
 pub trait RaftClientApi {
-    fn write_to_log(&self, input: WriteToLogInput) -> Result<WriteToLogOutput, WriteToLogError>;
+    fn write_to_log(&mut self, input: WriteToLogInput)
+        -> Result<WriteToLogOutput, WriteToLogError>;
 }
 
 pub struct WriteToLogInput {
@@ -36,9 +37,12 @@ pub enum WriteToLogError {
     #[error("Cluster is in a tough shape. No one is leader.")]
     NoLeader,
 
+    #[error("Failed to persist log")]
+    LocalIoError(io::Error),
+
     // For unexpected failures.
     #[error("I'm leader, but couldn't replicate data to majority. Some unexpected failure. Idk.")]
-    FailedToReplicate(Box<dyn Error>),
+    ReplicationError(Box<dyn Error>),
 }
 
 // We need this internally.
