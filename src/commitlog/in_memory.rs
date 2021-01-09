@@ -30,10 +30,7 @@ impl<E: Entry> Log<E> for InMemoryLog<E> {
     }
 
     fn read(&self, index: Index) -> Result<Option<E>, io::Error> {
-        let opt_entry = self.log
-            .get(index.val() as usize)
-            .cloned()
-            .map(|b| E::from(b));
+        let opt_entry = self.log.get(index.val() as usize).cloned().map(|b| E::from(b));
 
         Ok(opt_entry)
     }

@@ -87,14 +87,34 @@
 //!
 //! `RaftRpcClient`
 //! - Client for calling remote `RaftRpcServer`.
+//!
+//!
+//! --------------------
+//!
+//! Copying notes from old gRPC server module:
+//!
+//! 3 different gRPC servers:
+//!
+//! Raft data plane ({raft_endpoint}) - this is the primitive building block.
+//! - AppendEntries(...)
+//! - RequestVote(...)
+//!
+//! Raft control plane ({raft_endpoint}) - used during raft deployment/cycling (infrequent). They ultimately delegate towards raft data plane.
+//! - ObserveCluster(...) - for adding self to cluster
+//! - LeaveCluster(...) - for removing self from cluster
+//! - UpdateCluster(...) - for existing members to become aware of added/removed members
+//!
+//! Public facing KV store ({app_endpoint}) - supports redirects. Ultimately results in raft data plane calls.
+//! - Get(key)
+//! - Put(key, value, options...)
+//! - Delete(key, options...)
+//!
 mod commit_log;
 mod election;
 mod local_state;
 mod peers;
 mod raft_rpcs;
 mod replica;
-mod router;
-mod state_machine;
 
 pub use commit_log::RaftLogEntry;
 pub use local_state::PersistentLocalState;
@@ -102,7 +122,5 @@ pub use local_state::VolatileLocalState;
 pub use peers::ClusterConfig;
 pub use peers::MemberInfo;
 pub use peers::ReplicaId;
-pub use replica::RaftReplica;
+pub use replica::Replica;
 pub use replica::ReplicaConfig;
-pub use state_machine::NoOpStateMachine;
-pub use state_machine::StateMachine;

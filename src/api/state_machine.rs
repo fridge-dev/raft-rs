@@ -2,7 +2,7 @@ use bytes::Bytes;
 
 /// StateMachine is the application specific view of applying the replicated logs in sequential
 /// consistent order.
-pub trait StateMachine {
+pub trait LocalStateMachineApplier {
     /// apply_committed_entry is called only when its guaranteed that the provided entry has been
     /// committed (i.e. replicated to a majority). Because of this guarantee, you will never need
     /// to reverse an entry once you've been asked to apply it, so your impl of applying an entry
@@ -23,21 +23,4 @@ pub trait StateMachine {
 pub enum StateMachineOutput {
     Data(Bytes),
     NoData,
-}
-
-// TODO:2 impl actual state machine for KV store app.
-pub struct NoOpStateMachine {
-    // nothing
-}
-
-impl NoOpStateMachine {
-    pub fn new() -> Self {
-        NoOpStateMachine {}
-    }
-}
-
-impl StateMachine for NoOpStateMachine {
-    fn apply_committed_entry(&mut self, _: Bytes) -> StateMachineOutput {
-        StateMachineOutput::NoData
-    }
 }

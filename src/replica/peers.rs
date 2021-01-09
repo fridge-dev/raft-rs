@@ -11,6 +11,5 @@ pub struct MemberInfo {
 }
 
 pub struct ClusterConfig {
-    pub cluster_id: String,
     pub cluster_members: Vec<MemberInfo>,
 }

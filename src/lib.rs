@@ -1,15 +1,15 @@
-#![allow(dead_code)]
+#![allow(dead_code)] // TODO:1.5 remove
 
 mod api;
 mod commitlog;
 mod replica;
 
-pub use api::GrpcServer;
+// TODO:1 public API should use its own type for ClusterConfig. Probably an array that we validate
+//        in lib and convert into hashmap for Replica.
+pub use api::*;
 pub use replica::ClusterConfig;
 pub use replica::MemberInfo;
-pub use replica::NoOpStateMachine;
 pub use replica::ReplicaId;
-pub use replica::StateMachine;
 
 // Learning 1: `create::{root_mod}` should not have any code. Just `mod` and `pub use` statements.
 // Learning 2: All `mod` statements, anywhere, should not be `pub`. Only export `pub` via individual

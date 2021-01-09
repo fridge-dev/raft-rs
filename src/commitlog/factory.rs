@@ -15,7 +15,7 @@ where
 }
 
 pub struct LogConfig {
-    pub cluster_id: String,
+    pub base_directory: String,
 }
 
 // -- InMemoryLogFactory --
@@ -41,7 +41,7 @@ pub struct SegmentedDiskLogFactory;
 impl<E: Entry> LogFactory<E, SegmentedDiskLog<E>> for SegmentedDiskLogFactory {
     fn try_create_log(&self, config: LogConfig) -> Result<SegmentedDiskLog<E>, io::Error> {
         let sdl = SegmentedDiskLog::new(StorageConfig {
-            directory: format!("/raft/replicated-commit-log/cluster_{}/", config.cluster_id),
+            directory: format!("{}/replicated-commit-log/", config.base_directory),
         });
 
         Ok(sdl)

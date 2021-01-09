@@ -32,7 +32,7 @@ pub struct VolatileLocalState {
 }
 
 impl VolatileLocalState {
-    pub fn new(/* This will need ClusterId for directory namespace */) -> Self {
+    pub fn new() -> Self {
         VolatileLocalState {
             current_term: Term::new(0),
             voted_for_this_term: None,
