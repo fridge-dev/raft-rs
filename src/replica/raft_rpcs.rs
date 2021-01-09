@@ -45,7 +45,7 @@ pub enum WriteToLogError {
     ReplicationError(Box<dyn Error>),
 }
 
-// We need this internally.
+// We need this internally. This is kind of like another "storage" layer.
 pub trait RaftRpcHandler {
     fn handle_request_vote(
         &mut self,
