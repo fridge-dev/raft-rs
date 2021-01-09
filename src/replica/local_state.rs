@@ -1,4 +1,4 @@
-use crate::ReplicaId;
+use crate::replica::peers::ReplicaId;
 
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
 pub struct Term(u64);

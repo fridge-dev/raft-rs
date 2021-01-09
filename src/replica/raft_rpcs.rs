@@ -1,7 +1,7 @@
 use crate::commitlog::Index;
 use crate::replica::local_state::Term;
-use crate::ReplicaId;
 use std::io;
+use crate::replica::peers::ReplicaId;
 
 // We implement this to support the {raft_endpoint} gRPC server.
 pub trait RaftRpcHandler {

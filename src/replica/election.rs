@@ -1,6 +1,6 @@
 use crate::commitlog::Index;
-use crate::ReplicaId;
 use std::collections::HashMap;
+use crate::replica::peers::ReplicaId;
 
 pub struct ElectionState {
     // Invariant: `state: Option<>` is always `Some` at beginning and end of method.

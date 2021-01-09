@@ -1,37 +1,37 @@
-use raft_rs::{ClusterConfig, MemberInfo, ReplicaId};
+use raft_rs::{MemberInfo, ClusterInfo};
 use std::net::Ipv4Addr;
 
 fn main() {
-    let config = fake_cluster_config();
-    let my_replica_id = config.cluster_members[0].id.clone().0;
-    let mut server = kv_app::KeyValueServer::new(config, my_replica_id);
+    let cluster = fake_cluster();
+    let mut server = kv_app::KeyValueServer::setup(cluster).expect("WTF");
 
     server.put("k1".into(), "v1".into());
     server.put("k2".into(), "v2".into());
 }
 
-fn fake_cluster_config() -> ClusterConfig {
-    ClusterConfig {
+fn fake_cluster() -> ClusterInfo {
+    ClusterInfo {
+        my_replica_id: "id-1".into(),
         cluster_members: vec![
             MemberInfo {
-                id: ReplicaId("id-1".into()),
-                ip: Ipv4Addr::from(0xFACE),
+                replica_id: "id-1".into(),
+                replica_ip_addr: Ipv4Addr::from(0xFACE),
             },
             MemberInfo {
-                id: ReplicaId("id-2".into()),
-                ip: Ipv4Addr::from(0xBEEF),
+                replica_id: "id-2".into(),
+                replica_ip_addr: Ipv4Addr::from(0xBEEF),
             },
             MemberInfo {
-                id: ReplicaId("id-3".into()),
-                ip: Ipv4Addr::from(0x1337),
+                replica_id: "id-3".into(),
+                replica_ip_addr: Ipv4Addr::from(0x1337),
             },
             MemberInfo {
-                id: ReplicaId("id-4".into()),
-                ip: Ipv4Addr::from(0xDEAF),
+                replica_id: "id-4".into(),
+                replica_ip_addr: Ipv4Addr::from(0xDEAF),
             },
             MemberInfo {
-                id: ReplicaId("id-5".into()),
-                ip: Ipv4Addr::from(0xBEEB),
+                replica_id: "id-5".into(),
+                replica_ip_addr: Ipv4Addr::from(0xBEEB),
             },
         ],
     }
@@ -41,11 +41,9 @@ fn fake_cluster_config() -> ClusterConfig {
 // a main.
 mod kv_app {
     use bytes::Bytes;
-    use raft_rs::{
-        ClusterConfig, LocalStateMachineApplier, RaftClientApi, RaftConfig, ReplicaId, StateMachineOutput,
-        WriteToLogInput,
-    };
+    use raft_rs::{LocalStateMachineApplier, RaftClientApi, RaftClientConfig, StateMachineOutput, WriteToLogInput, ClusterInfo};
     use std::collections::HashMap;
+    use std::error::Error;
 
     #[derive(Default)]
     pub struct DumbStateMachine {
@@ -66,20 +64,19 @@ mod kv_app {
     }
 
     impl KeyValueServer {
-        pub fn new(cluster_config: ClusterConfig, my_replica_id: String) -> Self {
-            let raft = raft_rs::create_raft_client(RaftConfig {
+        pub fn setup(cluster_info: ClusterInfo) -> Result<Self, Box<dyn Error>> {
+            let raft = raft_rs::create_raft_client(RaftClientConfig {
                 state_machine: DumbStateMachine::default(),
-                cluster_config,
-                my_replica_id: ReplicaId(my_replica_id),
                 log_directory: "/raft/".to_string(),
-            });
+                cluster_info
+            })?;
 
-            KeyValueServer { raft }
+            Ok(KeyValueServer { raft })
         }
 
         pub fn put(&mut self, key: String, value: String) {
             let bytes: Bytes = encode(key, value);
-            let data: Vec<u8> = bytes.as_ref().to_vec();
+            let data: Vec<u8> = bytes.to_vec();
             self.raft.write_to_log(WriteToLogInput { data }).unwrap();
         }
     }

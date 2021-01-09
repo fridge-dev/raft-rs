@@ -2,17 +2,15 @@ use crate::commitlog::{Index, Log};
 use crate::replica::commit_log::{CommitLog, RaftLogEntry};
 use crate::replica::election::{CurrentLeader, ElectionState};
 use crate::replica::local_state::{PersistentLocalState, Term};
-use crate::replica::peers::MemberInfo;
+use crate::replica::peers::{ClusterMember, ReplicaId, Cluster};
 use crate::replica::raft_rpcs::{
     AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, LeaderLogEntry, RaftRpcHandler, RequestVoteError,
     RequestVoteInput, RequestVoteOutput, TermOutOfDateInfo,
 };
-use crate::replica::ReplicaId;
 use crate::{LocalStateMachineApplier, StateMachineOutput, WriteToLogError, WriteToLogInput, WriteToLogOutput};
 use bytes::Bytes;
 use std::cmp;
 use std::collections::HashMap;
-use std::hash::Hash;
 
 pub struct ReplicaConfig<L, S, M>
 where
@@ -20,8 +18,7 @@ where
     S: PersistentLocalState,
     M: LocalStateMachineApplier,
 {
-    pub my_replica_id: ReplicaId,
-    pub cluster_members: Vec<MemberInfo>,
+    pub cluster: Cluster,
     pub log: L,
     pub local_state: S,
     pub state_machine: M,
@@ -34,7 +31,7 @@ where
     M: LocalStateMachineApplier,
 {
     my_replica_id: ReplicaId,
-    cluster_members: HashMap<ReplicaId, MemberInfo>,
+    cluster_members: HashMap<ReplicaId, ClusterMember>,
     local_state: S,
     election_state: ElectionState,
     commit_log: CommitLog<L>,
@@ -49,10 +46,9 @@ where
 {
     pub fn new(config: ReplicaConfig<L, S, M>) -> Self {
         let commit_log = CommitLog::new(config.log);
-        let cluster_members = map_with_unique_index(config.cluster_members, |m| m.id.clone())
-            .expect("Cluster members have duplicate ReplicaId.");
+        let (my_replica_id, cluster_members) = config.cluster.destruct();
         Replica {
-            my_replica_id: config.my_replica_id,
+            my_replica_id,
             cluster_members,
             local_state: config.local_state,
             election_state: ElectionState::new_follower(),
@@ -88,9 +84,9 @@ where
             CurrentLeader::Me => { /* carry on */ }
             CurrentLeader::Other(leader_id) => match self.cluster_members.get(&leader_id) {
                 Some(leader) => {
-                    return Err(WriteToLogError::FollowerRedirect {
-                        leader_id,
-                        leader_ip: leader.ip,
+                    return Err(WriteToLogError::LeaderRedirect {
+                        leader_id: leader_id.into_inner(),
+                        leader_ip: leader.ip_addr(),
                     });
                 }
                 None => {
@@ -284,20 +280,3 @@ where
     }
 }
 
-/// Returns a HashMap that is guaranteed to have uniquely indexed all of the values. If duplicate is
-/// present, the key for the duplicate is returned as an Err.
-fn map_with_unique_index<K, V, F>(values: Vec<V>, key_for_value: F) -> Result<HashMap<K, V>, K>
-where
-    K: Hash + Eq,
-    F: Fn(&V) -> K,
-{
-    let mut map = HashMap::with_capacity(values.len());
-
-    for v in values {
-        if let Some(duplicate) = map.insert(key_for_value(&v), v) {
-            return Err(key_for_value(&duplicate));
-        }
-    }
-
-    Ok(map)
-}

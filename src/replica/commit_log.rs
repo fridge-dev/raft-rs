@@ -127,7 +127,7 @@ impl<L: Log<RaftLogEntry>> CommitLog<L> {
 /// Byte representation:
 ///
 /// ```text
-///                                           1
+/// |                                         1                           |
 /// | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 0 | 1 | 2 | 3 | 4 | 5 | ... |
 /// +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+-...-+
 /// |Vrs|       Term (8 bytes)          |   Data (variable size)      ... |

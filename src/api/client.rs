@@ -1,4 +1,3 @@
-use crate::ReplicaId;
 use std::error::Error;
 use std::io;
 use std::net::Ipv4Addr;
@@ -20,7 +19,10 @@ pub struct WriteToLogOutput {
 #[derive(Debug, thiserror::Error)]
 pub enum WriteToLogError {
     #[error("I'm not leader")]
-    FollowerRedirect { leader_id: ReplicaId, leader_ip: Ipv4Addr },
+    LeaderRedirect {
+        leader_id: String,
+        leader_ip: Ipv4Addr,
+    },
 
     // Can be retried with exponential backoff with recommended initial delay of 200ms. Likely an
     // election is in progress.

@@ -1,42 +1,50 @@
 //! This mod is responsible for configuring and creating an instance of `RaftClientApi` for application to use.
 
-use crate::api::client::RaftClientApi;
-use crate::api::placeholder_impl::PlaceholderImpl;
 use crate::api::state_machine::LocalStateMachineApplier;
-use crate::commitlog::{InMemoryLogFactory, LogConfig, LogFactory};
-use crate::replica::{Replica, ReplicaConfig, VolatileLocalState};
-use crate::{ClusterConfig, ReplicaId};
+use std::net::Ipv4Addr;
+use crate::replica;
+use std::convert::TryFrom;
+use crate::api::factory::ClientCreationError;
+use crate::replica::Cluster;
 
-pub struct RaftConfig<M>
+pub struct RaftClientConfig<M>
 where
     M: LocalStateMachineApplier,
 {
     pub state_machine: M,
-    pub cluster_config: ClusterConfig,
-    pub my_replica_id: ReplicaId,
     // A directory where we can create files and sub-directories.
     pub log_directory: String,
+    pub cluster_info: ClusterInfo,
 }
 
-pub fn create_raft_client<M: 'static>(config: RaftConfig<M>) -> Box<dyn RaftClientApi>
-where
-    M: LocalStateMachineApplier,
-{
-    let log = InMemoryLogFactory::new()
-        .try_create_log(LogConfig {
-            base_directory: config.log_directory,
-        })
-        .expect("that shit can't fail");
+pub struct ClusterInfo {
+    pub my_replica_id: String,
+    pub cluster_members: Vec<MemberInfo>,
+}
 
-    let replica = Replica::new(ReplicaConfig {
-        my_replica_id: config.my_replica_id,
-        cluster_members: config.cluster_config.cluster_members,
-        log,
-        local_state: VolatileLocalState::new(),
-        state_machine: config.state_machine,
-    });
+pub struct MemberInfo {
+    pub replica_id: String,
+    pub replica_ip_addr: Ipv4Addr,
+}
 
-    let client = PlaceholderImpl { replica };
+impl TryFrom<ClusterInfo> for replica::Cluster {
+    type Error = ClientCreationError;
 
-    Box::new(client)
+    fn try_from(cluster_info: ClusterInfo) -> Result<Self, Self::Error> {
+        let members = cluster_info.cluster_members.into_iter()
+            .map(|member| member.into())
+            .collect();
+
+        Cluster::create_valid_cluster(members, cluster_info.my_replica_id)
+            .map_err(|e| ClientCreationError::InvalidClusterInfo(e.into()))
+    }
+}
+
+impl From<MemberInfo> for replica::ClusterMember {
+    fn from(member_info: MemberInfo) -> Self {
+        replica::ClusterMember::new(
+            member_info.replica_id,
+            member_info.replica_ip_addr,
+        )
+    }
 }
