@@ -1,11 +1,11 @@
 use crate::commitlog::{Index, Log};
-use crate::replica::commit_log::{CommitLog, RaftLogEntry};
+use crate::replica::commit_log::{RaftLog, RaftLogEntry};
 use crate::replica::election::{CurrentLeader, ElectionState};
 use crate::replica::local_state::{PersistentLocalState, Term};
-use crate::replica::peers::{ClusterMember, ReplicaId, Cluster};
+use crate::replica::peers::{Cluster, ClusterMember, ReplicaId};
 use crate::replica::raft_rpcs::{
-    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, LeaderLogEntry, RaftRpcHandler, RequestVoteError,
-    RequestVoteInput, RequestVoteOutput, TermOutOfDateInfo,
+    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, RaftRpcHandler, RequestVoteError, RequestVoteInput,
+    RequestVoteOutput, TermOutOfDateInfo,
 };
 use crate::{LocalStateMachineApplier, StateMachineOutput, WriteToLogError, WriteToLogInput, WriteToLogOutput};
 use bytes::Bytes;
@@ -34,7 +34,7 @@ where
     cluster_members: HashMap<ReplicaId, ClusterMember>,
     local_state: S,
     election_state: ElectionState,
-    commit_log: CommitLog<L>,
+    commit_log: RaftLog<L>,
     state_machine: M,
 }
 
@@ -45,7 +45,7 @@ where
     M: LocalStateMachineApplier,
 {
     pub fn new(config: ReplicaConfig<L, S, M>) -> Self {
-        let commit_log = CommitLog::new(config.log);
+        let commit_log = RaftLog::new(config.log);
         let (my_replica_id, cluster_members) = config.cluster.destruct();
         Replica {
             my_replica_id,
@@ -68,14 +68,17 @@ where
         candidate_last_entry_term: Term,
         candidate_last_entry_index: Index,
     ) -> bool {
-        let (my_last_entry_term, my_last_entry_index) = self.commit_log.latest_entry();
-        if candidate_last_entry_term > my_last_entry_term {
-            return true;
-        } else if candidate_last_entry_term < my_last_entry_term {
-            return false;
-        }
+        if let Some((my_last_entry_term, my_last_entry_index)) = self.commit_log.latest_entry() {
+            if candidate_last_entry_term > my_last_entry_term {
+                return true;
+            } else if candidate_last_entry_term < my_last_entry_term {
+                return false;
+            }
 
-        candidate_last_entry_index > my_last_entry_index
+            candidate_last_entry_index > my_last_entry_index
+        } else {
+            true
+        }
     }
 
     pub fn write_to_log(&mut self, input: WriteToLogInput) -> Result<WriteToLogOutput, WriteToLogError> {
@@ -101,27 +104,27 @@ where
         // > If command received from client: append entry to local log,
         // > respond after entry applied to state machine (§5.3)
         let term = self.local_state.current_term();
-        let index = self.commit_log.next_index();
-        // TODO:1 leader needs own API
-        let new_entry = LeaderLogEntry {
+        let new_entry = RaftLogEntry {
             term,
-            index,
-            data: input.data.clone(),
+            data: input.data.to_vec(),
         };
-        self.commit_log
-            .append(vec![new_entry])
+        let appended_index = self
+            .commit_log
+            .append(new_entry)
             .map_err(|e| WriteToLogError::LocalIoError(e))?;
 
-        // TODO:2 (after gRPC setup and threading/timers) replicate entries
-        let applier_outcome = match self.state_machine.apply_committed_entry(Bytes::from(input.data)) {
+        self.replicate_new_entry(appended_index, term, input.data.clone());
+
+        let applier_outcome = match self.state_machine.apply_committed_entry(input.data) {
             StateMachineOutput::Data(outcome) => outcome,
             StateMachineOutput::NoData => Bytes::new(),
         };
 
-        Ok(WriteToLogOutput {
-            // TODO:2 decide on byte repr of Vec<u8> vs Bytes. This is wasteful.
-            applier_outcome: applier_outcome.to_vec(),
-        })
+        Ok(WriteToLogOutput { applier_outcome })
+    }
+
+    fn replicate_new_entry(&self, _entry_index: Index, _entry_term: Term, _entry_data: Bytes) {
+        // TODO:2 (after gRPC setup and threading/timers) replicate entries
     }
 }
 
@@ -213,39 +216,65 @@ where
 
         // 2. Reply false if [my] log doesn't contain an entry at [leader's]
         // prevLogIndex whose term matches [leader's] prevLogTerm (§5.3)
+        // TODO:2 readability improvement
         let me_missing_entry = match self.commit_log.read(input.leader_previous_log_entry_index) {
             Ok(Some(my_previous_log_entry)) => Ok(my_previous_log_entry.term != input.leader_previous_log_entry_term),
             Ok(None) => Ok(true),
             Err(e) => Err(AppendEntriesError::ServerIoError(e)),
         }?;
         if me_missing_entry {
-            // 3. If [my] existing entry conflicts with [leader's] (same index
-            // but different terms), delete [my] existing entry and all that
-            // follow it (§5.3)
-            self.commit_log.rewind_single_entry();
             return Err(AppendEntriesError::ServerMissingPreviousLogEntry);
         }
 
+        // 3. If [my] existing entry conflicts with [leader's] (same index
+        // but different terms), delete [my] existing entry and all that
+        // follow it (§5.3)
         // 4. Append any new entries not already in the log
-        let opt_index_of_last_new_entry = input.entries.last().map(|last_entry| last_entry.index);
-        self.commit_log
-            .append(input.entries)
-            .map_err(|e| AppendEntriesError::ServerIoError(e))?;
+        let mut new_entry_index = input.leader_previous_log_entry_index;
+        for new_entry in input.new_entries.iter() {
+            new_entry_index.incr(1);
+
+            // TODO:2 optimize read to not happen if we know we've truncated log in a previous iteration.
+            let opt_existing_entry = self
+                .commit_log
+                .read(new_entry_index)
+                .map_err(|e| AppendEntriesError::ServerIoError(e))?;
+
+            // 3. (if...)
+            if let Some(existing_entry) = opt_existing_entry {
+                if existing_entry.term == new_entry.term {
+                    // 4. (no-op)
+                    continue;
+                } else {
+                    // 3. (delete)
+                    self.commit_log
+                        .truncate(new_entry_index)
+                        .map_err(|e| AppendEntriesError::ServerIoError(e))?;
+                }
+            }
+
+            // 4. (append)
+            self.commit_log
+                .append(RaftLogEntry {
+                    term: new_entry.term,
+                    data: new_entry.data.to_vec(),
+                })
+                .map_err(|e| AppendEntriesError::ServerIoError(e))?;
+        }
 
         // 5. If leaderCommit > commitIndex, set commitIndex =
         // min(leaderCommit, index of last new entry)
         if input.leader_commit_index > self.commit_log.commit_index {
             // TODO:1 wtf to do if entries was empty?? Paper doesn't state this. Formal spec probably does though.
             //        For now, assuming it's safe to update. Eventually, read spec to confirm.
-            let new_commit_index = match opt_index_of_last_new_entry {
-                Some(index_of_last_new_entry) => cmp::min(input.leader_commit_index, index_of_last_new_entry),
-                None => input.leader_commit_index,
-            };
-
-            // Sanity check because I'm uncertain. Re-read paper/spec.
-            let (_, my_last_entry_index) = self.commit_log.latest_entry();
-            assert!(new_commit_index <= my_last_entry_index, "Raft paper has failed me.");
-
+            //        Being pragmatic: Leader could say their commit index is N+1 despite they've only replicated
+            //        indexes [_, N] to us. In which case, we should only mark N as committed and wait until we
+            //        get sent N+1. If entries are missing, then make sure to not increment commit index
+            //        past what we have received. Even though that should never happen?
+            let last_index_from_current_leader = input
+                .leader_previous_log_entry_index
+                .plus(input.new_entries.len() as u64);
+            let new_commit_index = cmp::min(input.leader_commit_index, last_index_from_current_leader);
             self.commit_log.commit_index = new_commit_index;
         }
 
@@ -254,8 +283,7 @@ where
         // > If commitIndex > lastApplied: increment lastApplied, apply
         // > log[lastApplied] to state machine (§5.3)
         while self.commit_log.last_applied_index < self.commit_log.commit_index {
-            let mut next_index = self.commit_log.last_applied_index;
-            next_index.incr(1);
+            let next_index = self.commit_log.last_applied_index.plus(1);
 
             // TODO:2 implement batch/streamed read.
             let entry = match self.commit_log.read(next_index) {
@@ -268,7 +296,7 @@ where
                     // We've already persisted the log. Applying committed logs is not on critical
                     // path. We can wait to retry next time.
                     // TODO:5 add logging/metrics. This is a dropped error.
-                    return output;
+                    break;
                 }
             };
 
@@ -279,4 +307,3 @@ where
         return output;
     }
 }
-

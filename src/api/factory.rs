@@ -1,14 +1,16 @@
-use crate::{RaftClientApi, RaftClientConfig, LocalStateMachineApplier};
-use crate::commitlog::{InMemoryLogFactory, LogConfig, LogFactory};
-use crate::replica::{Replica, ReplicaConfig, VolatileLocalState, Cluster};
 use crate::api::placeholder_impl::PlaceholderImpl;
-use std::error::Error;
+use crate::commitlog::{InMemoryLogFactory, LogConfig, LogFactory};
+use crate::replica::{Cluster, Replica, ReplicaConfig, VolatileLocalState};
+use crate::{LocalStateMachineApplier, RaftClientApi, RaftClientConfig};
 use std::convert::TryFrom;
+use std::error::Error;
 use std::io;
 
-pub fn create_raft_client<M: 'static>(config: RaftClientConfig<M>) -> Result<Box<dyn RaftClientApi>, ClientCreationError>
-    where
-        M: LocalStateMachineApplier,
+pub fn create_raft_client<M: 'static>(
+    config: RaftClientConfig<M>,
+) -> Result<Box<dyn RaftClientApi>, ClientCreationError>
+where
+    M: LocalStateMachineApplier,
 {
     let log = InMemoryLogFactory::new()
         .try_create_log(LogConfig {

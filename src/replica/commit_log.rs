@@ -4,16 +4,13 @@
 
 use crate::commitlog::{Entry, Index, Log};
 use crate::replica::local_state::Term;
-use crate::replica::raft_rpcs::LeaderLogEntry;
 use std::io;
 
-pub struct CommitLog<L: Log<RaftLogEntry>> {
+pub struct RaftLog<L: Log<RaftLogEntry>> {
     // This is the log that we're replicating.
     log: L,
-    // Term when the highest log entry was locally written.
-    term_of_latest_entry: Term,
-    // Index of highest log entry that we've locally written.
-    index_of_latest_entry: Index,
+    // Metadata about the highest log entry that we've locally written. It must be updated atomically.
+    latest_entry_metadata: Option<(Term, Index)>,
 
     // TODO:1 move SM, commit+applied index to its own struct. They belong together.
     // Index of highest log entry known to be committed.
@@ -22,99 +19,50 @@ pub struct CommitLog<L: Log<RaftLogEntry>> {
     pub last_applied_index: Index,
 }
 
-impl<L: Log<RaftLogEntry>> CommitLog<L> {
+impl<L: Log<RaftLogEntry>> RaftLog<L> {
     pub fn new(log: L) -> Self {
-        // TODO:1 properly initialize based on last log entry.
-        let index_of_latest_entry = log.next_index();
-        let term_of_latest_entry = Term::new(0);
+        // TODO:3 properly initialize based on existing log. For now, always assume empty log.
+        assert_eq!(log.next_index(), Index::new(0));
 
-        CommitLog {
+        RaftLog {
             log,
-            term_of_latest_entry,
-            index_of_latest_entry,
+            latest_entry_metadata: None,
             commit_index: Index::new(0),
             last_applied_index: Index::new(0),
         }
     }
 
-    pub fn latest_entry(&self) -> (Term, Index) {
-        (self.term_of_latest_entry, self.index_of_latest_entry)
+    pub fn latest_entry(&self) -> Option<(Term, Index)> {
+        self.latest_entry_metadata
     }
 
     pub fn read(&self, index: Index) -> Result<Option<RaftLogEntry>, io::Error> {
         self.log.read(index)
     }
 
-    pub fn next_index(&self) -> Index {
-        self.log.next_index()
-    }
+    /// Remove anything starting at `index` and later.
+    pub fn truncate(&mut self, index: Index) -> Result<(), io::Error> {
+        let new_latest_entry_index = index.minus(1);
+        let new_latest_entry_metadata = self
+            .log
+            .read(new_latest_entry_index)?
+            .map(|latest_entry| (latest_entry.term, new_latest_entry_index));
 
-    // note: unsure about delta type
-    pub fn rewind_single_entry(&mut self) {
-        // Removes exactly just the latest entry
-        self.log.truncate(self.index_of_latest_entry);
-        // Decrement index
-        self.index_of_latest_entry.decr(1);
-        // Update term
-        match self.log.read(self.index_of_latest_entry) {
-            Ok(Some(entry)) => {
-                self.term_of_latest_entry = entry.term;
-            }
-            Ok(None) => {
-                // TODO:3 handle error properly or prevent it from being possible.
-                // TODO:3 if can't, validate this is safe.
-                self.term_of_latest_entry = Term::new(0);
-            }
-            Err(_) => {
-                // TODO:3 handle error properly or prevent it from being possible.
-                // TODO:3 if can't, validate this is safe.
-                self.term_of_latest_entry = Term::new(0);
-            }
-        }
-    }
+        // Only update log after we've successfully read what new state will be. I guess
+        // reading after updating helps guarantee we can read in the future. Hmm.
+        self.log.truncate(index);
 
-    pub fn append(&mut self, entries: Vec<LeaderLogEntry>) -> Result<(), io::Error> {
-        // Pre-condition: index should match.
-        if let Some(first) = entries.first() {
-            assert_eq!(self.log.next_index(), first.index, "FRICK. This is NOT GOOD. We attempted to append log from leader even though we don't have next log. We are bug!");
-        }
-
-        let mut last_appended_index = self.index_of_latest_entry;
-        let mut last_appended_term = self.term_of_latest_entry;
-        for next_entry in entries {
-            // Intermediate Pre-condition(s): index(es) should match.
-            assert_eq!(self.log.next_index(), next_entry.index, "FRICK2. This is NOT GOOD. We attempted to append log from leader even though we don't have next log. We are bug!");
-
-            let raft_entry = RaftLogEntry {
-                term: next_entry.term,
-                data: next_entry.data,
-            };
-            match self.log.append(raft_entry) {
-                Ok(appended_index) => {
-                    // Intermediate Post-condition(s): index(es) should match.
-                    // Am I just paranoid now? Yes. Damn. This is probably too much.
-                    // TODO:2 find better way to safely/statically guarantee invariants. Or maybe just trust in commitlog lib, and validate request at higher level.
-                    assert_eq!(appended_index, next_entry.index, "FRICK2. This is NOT GOOD. We attempted to append log from leader even though we don't have next log. We are bug!");
-                    last_appended_index = appended_index;
-                    last_appended_term = next_entry.term;
-                }
-                Err(e) => {
-                    // Revert log to original state then return err.
-                    // TODO:2 validate invariants via post-condition
-                    let mut index_to_truncate = self.index_of_latest_entry;
-                    index_to_truncate.incr(1);
-                    self.log.truncate(index_to_truncate);
-                    return Err(e);
-                }
-            }
-        }
-
-        // Only update these once completely successful.
-        // TODO:2 validate invariants via post-condition
-        self.index_of_latest_entry = last_appended_index;
-        self.term_of_latest_entry = last_appended_term;
-
+        self.latest_entry_metadata = new_latest_entry_metadata;
         Ok(())
+    }
+
+    pub fn append(&mut self, entry: RaftLogEntry) -> Result<Index, io::Error> {
+        let appended_term = entry.term;
+        let appended_index = self.log.append(entry)?;
+        // Only update state after log action completes.
+        self.latest_entry_metadata = Some((appended_term, appended_index));
+
+        Ok(appended_index)
     }
 
     // Does this need to return new entries to apply to SM? Should SM just live within this struct?

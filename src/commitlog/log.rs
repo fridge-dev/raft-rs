@@ -21,12 +21,21 @@ impl Index {
         self.0 += delta;
     }
 
+    pub fn plus(&self, delta: u64) -> Index {
+        Index(self.0 + delta)
+    }
+
     pub fn decr(&mut self, delta: u64) {
         self.0 -= delta;
+    }
+
+    pub fn minus(&self, delta: u64) -> Index {
+        Index(self.0 - delta)
     }
 }
 
 /// Log is an append only log intended for use as a replicated commit log in a database.
+/// TODO:2 index from 0 or 1?
 pub trait Log<E: Entry> {
     /// append() appends a log entry to the log at the next log entry index, then returns
     /// the log entry index that was just used to append the entry.
@@ -35,7 +44,8 @@ pub trait Log<E: Entry> {
     /// Read log entry at specified index.
     fn read(&self, index: Index) -> Result<Option<E>, io::Error>;
 
-    /// Soft-deletes anything starting at `index` and later.
+    /// Soft-deletes anything starting at `index` and later. Soft-deletion makes this infallible.
+    /// If hard-deletion is required, add a new method.
     fn truncate(&mut self, index: Index);
 
     /// next_index returns the next index that will be used to append an entry.

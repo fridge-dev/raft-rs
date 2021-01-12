@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::error::Error;
 use std::io;
 use std::net::Ipv4Addr;
@@ -8,21 +9,17 @@ pub trait RaftClientApi {
 }
 
 pub struct WriteToLogInput {
-    // TODO:1 refactor to Bytes
-    pub data: Vec<u8>,
+    pub data: Bytes,
 }
 
 pub struct WriteToLogOutput {
-    pub applier_outcome: Vec<u8>,
+    pub applier_outcome: Bytes,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum WriteToLogError {
     #[error("I'm not leader")]
-    LeaderRedirect {
-        leader_id: String,
-        leader_ip: Ipv4Addr,
-    },
+    LeaderRedirect { leader_id: String, leader_ip: Ipv4Addr },
 
     // Can be retried with exponential backoff with recommended initial delay of 200ms. Likely an
     // election is in progress.

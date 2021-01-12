@@ -1,4 +1,4 @@
-use raft_rs::{MemberInfo, ClusterInfo};
+use raft_rs::{ClusterInfo, MemberInfo};
 use std::net::Ipv4Addr;
 
 fn main() {
@@ -41,7 +41,9 @@ fn fake_cluster() -> ClusterInfo {
 // a main.
 mod kv_app {
     use bytes::Bytes;
-    use raft_rs::{LocalStateMachineApplier, RaftClientApi, RaftClientConfig, StateMachineOutput, WriteToLogInput, ClusterInfo};
+    use raft_rs::{
+        ClusterInfo, LocalStateMachineApplier, RaftClientApi, RaftClientConfig, StateMachineOutput, WriteToLogInput,
+    };
     use std::collections::HashMap;
     use std::error::Error;
 
@@ -68,15 +70,14 @@ mod kv_app {
             let raft = raft_rs::create_raft_client(RaftClientConfig {
                 state_machine: DumbStateMachine::default(),
                 log_directory: "/raft/".to_string(),
-                cluster_info
+                cluster_info,
             })?;
 
             Ok(KeyValueServer { raft })
         }
 
         pub fn put(&mut self, key: String, value: String) {
-            let bytes: Bytes = encode(key, value);
-            let data: Vec<u8> = bytes.to_vec();
+            let data = encode(key, value);
             self.raft.write_to_log(WriteToLogInput { data }).unwrap();
         }
     }

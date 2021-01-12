@@ -1,7 +1,8 @@
 use crate::commitlog::Index;
 use crate::replica::local_state::Term;
-use std::io;
 use crate::replica::peers::ReplicaId;
+use bytes::Bytes;
+use std::io;
 
 // We implement this to support the {raft_endpoint} gRPC server.
 pub trait RaftRpcHandler {
@@ -28,16 +29,17 @@ pub enum RequestVoteError {
 pub struct AppendEntriesInput {
     pub leader_term: Term,
     pub leader_id: ReplicaId,
-    pub leader_previous_log_entry_index: Index,
-    pub leader_previous_log_entry_term: Term,
     pub leader_commit_index: Index,
-    pub entries: Vec<LeaderLogEntry>,
+    pub new_entries: Vec<ReplicatedLogEntry>,
+    // > index of log entry immediately preceding new ones
+    pub leader_previous_log_entry_index: Index, // TODO:2 this is type from commitlog crate. Bad abstraction.
+    pub leader_previous_log_entry_term: Term,
 }
 
-pub struct LeaderLogEntry {
+// TODO:3 name is weird, make it better
+pub struct ReplicatedLogEntry {
     pub term: Term,
-    pub index: Index,
-    pub data: Vec<u8>,
+    pub data: Bytes,
 }
 
 pub struct AppendEntriesOutput {

@@ -14,7 +14,7 @@ pub trait LocalStateMachineApplier {
     /// provide an opaque data blob as a result of applying the state transition, and we will return
     /// it to your client. This way, a client can correspond a state machines action and output with
     /// its requested state transition.
-    // TODO:1 is `& mut` correct? Might need `&` instead so app can serve reads.
+    // TODO:2 is `& mut` correct? Might need `&` instead so app can serve reads.
     fn apply_committed_entry(&mut self, entry: Bytes) -> StateMachineOutput;
 
     // TODO:3 implement snapshotting.
