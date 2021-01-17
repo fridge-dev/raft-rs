@@ -13,7 +13,7 @@ pub struct WriteToLogInput {
 }
 
 pub struct WriteToLogOutput {
-    pub applier_outcome: Bytes,
+    pub applier_output: Bytes,
 }
 
 #[derive(Debug, thiserror::Error)]

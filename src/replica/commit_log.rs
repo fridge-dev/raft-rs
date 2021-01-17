@@ -5,28 +5,41 @@
 use crate::commitlog::{Entry, Index, Log};
 use crate::replica::local_state::Term;
 use std::io;
+use crate::{LocalStateMachineApplier, StateMachineOutput};
+use bytes::Bytes;
 
-pub struct RaftLog<L: Log<RaftLogEntry>> {
+/// RaftLog is the raft-specific log facade.
+///
+/// Note: A log entry has 3 states (not modeled directly in code):
+/// 1. Persisted - written to disk, not yet replicated to majority
+/// 2. Committed - written to disk, replicated to majority
+/// 3. Applied - a committed entry that has also been applied to the state machine
+///
+/// A log entry's state has no global truth. Each replica will have their own local view of what
+/// state the log entry is in.
+pub struct RaftLog<L, M> where L: Log<RaftLogEntry>, M: LocalStateMachineApplier {
     // This is the log that we're replicating.
     log: L,
     // Metadata about the highest log entry that we've locally written. It must be updated atomically.
     latest_entry_metadata: Option<(Term, Index)>,
 
-    // TODO:1 move SM, commit+applied index to its own struct. They belong together.
+    // Application specific state machine, provided by library client.
+    state_machine: M,
     // Index of highest log entry known to be committed.
-    pub commit_index: Index,
+    commit_index: Index,
     // Index of highest log entry applied to state machine.
-    pub last_applied_index: Index,
+    last_applied_index: Index,
 }
 
-impl<L: Log<RaftLogEntry>> RaftLog<L> {
-    pub fn new(log: L) -> Self {
+impl<L, M> RaftLog<L, M> where L: Log<RaftLogEntry>, M: LocalStateMachineApplier {
+    pub fn new(log: L, state_machine: M) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
         assert_eq!(log.next_index(), Index::new(0));
 
         RaftLog {
             log,
             latest_entry_metadata: None,
+            state_machine,
             commit_index: Index::new(0),
             last_applied_index: Index::new(0),
         }
@@ -65,10 +78,39 @@ impl<L: Log<RaftLogEntry>> RaftLog<L> {
         Ok(appended_index)
     }
 
-    // Does this need to return new entries to apply to SM? Should SM just live within this struct?
-    // TODO:1 move this and commit+applied index to its own struct.
-    pub fn ratchet_commit_index(&mut self, _commit_index: Index) {
-        // TODO:1 impl
+    pub fn commit_index(&self) -> Index {
+        self.commit_index
+    }
+
+    pub fn ratchet_fwd_commit_index(&mut self, new_commit_index: Index) {
+        if new_commit_index <= self.commit_index {
+            panic!("ratchet_fwd_commit_index() called with '{:?}' < current commit index {:?}", new_commit_index, self.commit_index);
+        }
+
+        self.commit_index = new_commit_index;
+    }
+
+    /// try_apply_all_committed_entries applies all committed but unapplied entries in order.
+    /// It returns the output of applying the final entry.
+    pub fn try_apply_all_committed_entries(&mut self) -> Result<Option<StateMachineOutput>, io::Error> {
+        let mut last_output = None;
+
+        while self.last_applied_index < self.commit_index {
+            let next_index = self.last_applied_index.plus(1);
+
+            // TODO:2 implement batch/streamed read.
+            let entry = match self.read(next_index) {
+                Ok(Some(entry)) => entry,
+                // TODO:2 validate and/or gracefully handle.
+                Ok(None) => panic!("This should never happen #5230185123"),
+                Err(e) => return Err(e),
+            };
+
+            last_output = Some(self.state_machine.apply_committed_entry(Bytes::from(entry.data)));
+            self.last_applied_index = next_index;
+        }
+
+        Ok(last_output)
     }
 }
 

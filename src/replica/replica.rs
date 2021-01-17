@@ -34,8 +34,7 @@ where
     cluster_members: HashMap<ReplicaId, ClusterMember>,
     local_state: S,
     election_state: ElectionState,
-    commit_log: RaftLog<L>,
-    state_machine: M,
+    commit_log: RaftLog<L, M>,
 }
 
 impl<L, S, M> Replica<L, S, M>
@@ -45,7 +44,7 @@ where
     M: LocalStateMachineApplier,
 {
     pub fn new(config: ReplicaConfig<L, S, M>) -> Self {
-        let commit_log = RaftLog::new(config.log);
+        let commit_log = RaftLog::new(config.log, config.state_machine);
         let (my_replica_id, cluster_members) = config.cluster.destruct();
         Replica {
             my_replica_id,
@@ -53,7 +52,6 @@ where
             local_state: config.local_state,
             election_state: ElectionState::new_follower(),
             commit_log,
-            state_machine: config.state_machine,
         }
     }
 
@@ -115,12 +113,18 @@ where
 
         self.replicate_new_entry(appended_index, term, input.data.clone());
 
-        let applier_outcome = match self.state_machine.apply_committed_entry(input.data) {
+        self.commit_log.ratchet_fwd_commit_index(appended_index);
+        let state_machine_output = self.commit_log.try_apply_all_committed_entries()
+            .map_err(|e| WriteToLogError::LocalIoError(e))?
+            // This should not happen, and indicates some erroneous state on the server.
+            .expect("Incremented commit index but then there was no corresponding entry to apply.");
+
+        let applier_output = match state_machine_output {
             StateMachineOutput::Data(outcome) => outcome,
             StateMachineOutput::NoData => Bytes::new(),
         };
 
-        Ok(WriteToLogOutput { applier_outcome })
+        Ok(WriteToLogOutput { applier_output })
     }
 
     fn replicate_new_entry(&self, _entry_index: Index, _entry_term: Term, _entry_data: Bytes) {
@@ -284,7 +288,7 @@ where
 
         // 5. If leaderCommit > commitIndex, set commitIndex =
         // min(leaderCommit, index of last new entry)
-        if input.leader_commit_index > self.commit_log.commit_index {
+        if input.leader_commit_index > self.commit_log.commit_index() {
             // TODO:2 wtf to do if entries was empty?? Paper doesn't state this. Formal spec probably does though.
             //        For now, assuming it's safe to update. Eventually, read spec to confirm.
             //        Being pragmatic: Leader could say their commit index is N+1 despite they've only replicated
@@ -295,33 +299,19 @@ where
                 .leader_previous_log_entry_index
                 .plus(input.new_entries.len() as u64);
             let new_commit_index = cmp::min(input.leader_commit_index, last_index_from_current_leader);
-            self.commit_log.commit_index = new_commit_index;
+            self.commit_log.ratchet_fwd_commit_index(new_commit_index);
         }
 
         let output = Ok(AppendEntriesOutput {});
 
         // > If commitIndex > lastApplied: increment lastApplied, apply
         // > log[lastApplied] to state machine (§5.3)
-        while self.commit_log.last_applied_index < self.commit_log.commit_index {
-            let next_index = self.commit_log.last_applied_index.plus(1);
-
-            // TODO:2 implement batch/streamed read.
-            let entry = match self.commit_log.read(next_index) {
-                Ok(Some(entry)) => entry,
-                Ok(None) => {
-                    // TODO:2 validate and/or gracefully handle.
-                    panic!("This should never happen #5230185123");
-                }
-                Err(_) => {
-                    // We've already persisted the log. Applying committed logs is not on critical
-                    // path. We can wait to retry next time.
-                    // TODO:5 add logging/metrics. This is a dropped error.
-                    break;
-                }
-            };
-
-            let _ = self.state_machine.apply_committed_entry(Bytes::from(entry.data));
-            self.commit_log.last_applied_index = next_index;
+        if let Err(e) = self.commit_log.try_apply_all_committed_entries() {
+            // We've already persisted the log. Applying committed logs is not on critical
+            // path. We can wait to retry next time.
+            // TODO:5 add logging/metrics. This is a dropped error.
+            eprintln!("Error while applying committed entries: {:?}", e);
+            // Fall through
         }
 
         return output;
