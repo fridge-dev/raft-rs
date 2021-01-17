@@ -184,14 +184,32 @@ where
         //        exclusive write to disk? We'll see if this is still needed.
         //        Edit: I guess it's possible that this is retry from our already-voted-for
         //        candidate, and we should handle it idempotent-ly.
-        let _ = self
+        let cas_success = self
             .local_state
-            .store_vote_for_term_if_unvoted(input.candidate_term, input.candidate_id);
+            .store_vote_for_term_if_unvoted(input.candidate_term, input.candidate_id.clone());
 
-        // If "unvoted" wasn't true, it means this is a retry, and it's safe to return true.
-        // If term changed due to race condition with disk, then frick, but everyone else will
-        // reject this candidate as out of date eventually, so this should be fine.
-        Ok(RequestVoteOutput { vote_granted: true })
+        if cas_success {
+            return Ok(RequestVoteOutput { vote_granted: true });
+        }
+
+        // We lost CAS race. Re-read state and return success based on if previous winner
+        // made the same vote as we would've.
+        //
+        // Note: In current in-memory impl of self.local_state, it is impossible we reach
+        // here (simply due to `&mut self` in this method). This may change in the future
+        // disk-based impl of self.local_state, and it's easy enough to handle it now, so
+        // let's do it.
+        if let (reread_current_term, Some(reread_voted_for)) = self.local_state.voted_for_current_term() {
+            if reread_current_term == input.candidate_term && reread_voted_for.as_ref() == &input.candidate_id {
+                // Client retried, we had 2 threads concurrently handling same vote.
+                // Award vote to requester.
+                return Ok(RequestVoteOutput { vote_granted: true });
+            }
+        }
+
+        // If current state doesn't exactly match this request, for whatever
+        // reason, don't grant vote.
+        Ok(RequestVoteOutput { vote_granted: false })
     }
 
     fn handle_append_entries(&mut self, input: AppendEntriesInput) -> Result<AppendEntriesOutput, AppendEntriesError> {
@@ -266,7 +284,7 @@ where
         // 5. If leaderCommit > commitIndex, set commitIndex =
         // min(leaderCommit, index of last new entry)
         if input.leader_commit_index > self.commit_log.commit_index {
-            // TODO:1 wtf to do if entries was empty?? Paper doesn't state this. Formal spec probably does though.
+            // TODO:2 wtf to do if entries was empty?? Paper doesn't state this. Formal spec probably does though.
             //        For now, assuming it's safe to update. Eventually, read spec to confirm.
             //        Being pragmatic: Leader could say their commit index is N+1 despite they've only replicated
             //        indexes [_, N] to us. In which case, we should only mark N as committed and wait until we
