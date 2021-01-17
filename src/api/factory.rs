@@ -1,5 +1,5 @@
 use crate::api::placeholder_impl::PlaceholderImpl;
-use crate::commitlog::{InMemoryLogFactory, LogConfig, LogFactory};
+use crate::commitlog::InMemoryLog;
 use crate::replica::{Cluster, Replica, ReplicaConfig, VolatileLocalState};
 use crate::{LocalStateMachineApplier, RaftClientApi, RaftClientConfig};
 use std::convert::TryFrom;
@@ -12,11 +12,7 @@ pub fn create_raft_client<M: 'static>(
 where
     M: LocalStateMachineApplier,
 {
-    let log = InMemoryLogFactory::new()
-        .try_create_log(LogConfig {
-            base_directory: config.log_directory,
-        })
-        .map_err(|e| ClientCreationError::LogInitialization(e))?;
+    let log = InMemoryLog::create().map_err(|e| ClientCreationError::LogInitialization(e))?;
 
     let cluster = Cluster::try_from(config.cluster_info)?;
 

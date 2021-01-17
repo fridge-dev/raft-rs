@@ -1,52 +1,27 @@
 use crate::commitlog::{Entry, Index, Log};
+use std::io;
 use std::io::Error;
 use std::marker::PhantomData;
 
-// Based on https://thehoard.blog/how-kafkas-storage-internals-work-3a29b02e026
+// TODO:3 Implement a durable commit log based on algorithm described in
+// https://thehoard.blog/how-kafkas-storage-internals-work-3a29b02e026.
 //
-// Bytes:
-// 0    : crc
-// 1    : crc
-// 2    : crc
-// 3    : crc
-// 4    : version
-// 5    : attributes
-// 6    : timestamp
-// 7    : timestamp
-// 8    : timestamp
-// 9    : timestamp
-// 10   : timestamp
-// 11   : timestamp
-// 12   : timestamp
-// 13   : timestamp
-// 14   : data size
-// 15   : data size
-// 16   : data size
-// 17   : data size
-// V0   : data
-// V1   : data
-// V2   : data
-// ...
-// Vn-2 : data
-// Vn-1 : data
-// Vn   : data
+// https://github.com/travisjeffery/jocko/tree/master/commitlog is a good (golang) reference.
 pub struct SegmentedDiskLog<E: Entry> {
-    // TODO:3 implement a durable commit log.
     _pd: PhantomData<E>,
 }
 
-// Generic config for initializing any type of disk-based commit log, independent of data
-// model and algorithm.
-pub struct StorageConfig {
+pub struct SegmentedDiskLogConfig {
     pub directory: String,
+    pub max_data_log_size_bytes: u64,
 }
 
 impl<E: Entry> SegmentedDiskLog<E> {
-    pub fn new(_: StorageConfig) -> Self {
-        SegmentedDiskLog {
+    pub fn create(_: SegmentedDiskLogConfig) -> Result<Self, io::Error> {
+        Ok(SegmentedDiskLog {
             // Nothing
             _pd: Default::default(),
-        }
+        })
     }
 }
 

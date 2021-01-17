@@ -114,7 +114,9 @@ where
         self.replicate_new_entry(appended_index, term, input.data.clone());
 
         self.commit_log.ratchet_fwd_commit_index(appended_index);
-        let state_machine_output = self.commit_log.try_apply_all_committed_entries()
+        let state_machine_output = self
+            .commit_log
+            .try_apply_all_committed_entries()
             .map_err(|e| WriteToLogError::LocalIoError(e))?
             // This should not happen, and indicates some erroneous state on the server.
             .expect("Incremented commit index but then there was no corresponding entry to apply.");

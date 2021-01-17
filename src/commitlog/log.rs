@@ -35,7 +35,9 @@ impl Index {
 }
 
 /// Log is an append only log intended for use as a replicated commit log in a database.
-/// TODO:2 index from 0 or 1?
+///
+/// Log indexes entries starting from 1. There will be no entry existing at index 0. The first
+/// entry is written at index 1.
 pub trait Log<E: Entry> {
     /// append() appends a log entry to the log at the next log entry index, then returns
     /// the log entry index that was just used to append the entry.
@@ -53,15 +55,3 @@ pub trait Log<E: Entry> {
 }
 
 pub trait Entry: Clone + From<Vec<u8>> + Into<Vec<u8>> {}
-
-// TODO:2 see if unneeded and delete.
-#[derive(Debug)]
-pub struct RawEntry {
-    data_blob: Vec<u8>,
-}
-
-impl RawEntry {
-    pub fn new(data_blob: Vec<u8>) -> Self {
-        RawEntry { data_blob }
-    }
-}

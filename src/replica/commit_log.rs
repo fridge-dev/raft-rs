@@ -4,9 +4,9 @@
 
 use crate::commitlog::{Entry, Index, Log};
 use crate::replica::local_state::Term;
-use std::io;
 use crate::{LocalStateMachineApplier, StateMachineOutput};
 use bytes::Bytes;
+use std::io;
 
 /// RaftLog is the raft-specific log facade.
 ///
@@ -17,7 +17,11 @@ use bytes::Bytes;
 ///
 /// A log entry's state has no global truth. Each replica will have their own local view of what
 /// state the log entry is in.
-pub struct RaftLog<L, M> where L: Log<RaftLogEntry>, M: LocalStateMachineApplier {
+pub struct RaftLog<L, M>
+where
+    L: Log<RaftLogEntry>,
+    M: LocalStateMachineApplier,
+{
     // This is the log that we're replicating.
     log: L,
     // Metadata about the highest log entry that we've locally written. It must be updated atomically.
@@ -31,7 +35,11 @@ pub struct RaftLog<L, M> where L: Log<RaftLogEntry>, M: LocalStateMachineApplier
     last_applied_index: Index,
 }
 
-impl<L, M> RaftLog<L, M> where L: Log<RaftLogEntry>, M: LocalStateMachineApplier {
+impl<L, M> RaftLog<L, M>
+where
+    L: Log<RaftLogEntry>,
+    M: LocalStateMachineApplier,
+{
     pub fn new(log: L, state_machine: M) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
         assert_eq!(log.next_index(), Index::new(0));
@@ -84,7 +92,10 @@ impl<L, M> RaftLog<L, M> where L: Log<RaftLogEntry>, M: LocalStateMachineApplier
 
     pub fn ratchet_fwd_commit_index(&mut self, new_commit_index: Index) {
         if new_commit_index <= self.commit_index {
-            panic!("ratchet_fwd_commit_index() called with '{:?}' < current commit index {:?}", new_commit_index, self.commit_index);
+            panic!(
+                "ratchet_fwd_commit_index() called with '{:?}' < current commit index {:?}",
+                new_commit_index, self.commit_index
+            );
         }
 
         self.commit_index = new_commit_index;
