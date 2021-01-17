@@ -18,8 +18,7 @@ where
     S: PersistentLocalState,
     M: LocalStateMachineApplier,
 {
-    fn write_to_log(&mut self, _: WriteToLogInput) -> Result<WriteToLogOutput, WriteToLogError> {
-        // TODO:1.5 impl client API
-        unimplemented!()
+    fn write_to_log(&mut self, input: WriteToLogInput) -> Result<WriteToLogOutput, WriteToLogError> {
+        self.replica.write_to_log(input)
     }
 }
