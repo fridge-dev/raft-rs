@@ -1,4 +1,5 @@
 use crate::replica::peers::ReplicaId;
+use std::sync::Arc;
 
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
 pub struct Term(u64);
@@ -16,11 +17,23 @@ impl Term {
 /// PersistentLocalState is used whenever the raft spec requires that something is persisted to a
 /// durable store to guarantee safety. Not everything that uses disk has to go through this, only
 /// algorithm-correctness-critical ones.
+///
+/// Store methods should be implemented atomically via a CAS like operation. Similar to most CAS
+/// method signatures, the CAS store methods will return true if we have mutated state.
 pub trait PersistentLocalState {
+    /// Set current term to `new_term` atomically, iff it is larger than current term.
+    ///
+    /// CAS: Return true if we successfully mutated state.
     fn store_term_if_increased(&mut self, new_term: Term) -> bool;
-    fn store_vote_for_term_if_unvoted(&mut self, expected_term: Term, vote: ReplicaId) -> bool;
+
+    /// Store our vote for the latest term iff the latest term (internal state) is the same term as
+    /// the one provided, and we have not stored a vote for the latest term.
+    ///
+    /// CAS: Return true if we successfully mutated state.
+    fn store_vote_for_term_if_unvoted(&mut self, expected_current_term: Term, vote: ReplicaId) -> bool;
+
     fn current_term(&self) -> Term;
-    fn voted_for_current_term(&self) -> (Term, Option<&ReplicaId>);
+    fn voted_for_current_term(&self) -> (Term, Option<Arc<ReplicaId>>);
 }
 
 // Currently, this is not persistent. It's just in memory. But I'm focusing on raft algorithm more
@@ -28,7 +41,7 @@ pub trait PersistentLocalState {
 // TODO:3 Persist local state to disk, not RAM.
 pub struct VolatileLocalState {
     current_term: Term,
-    voted_for_this_term: Option<ReplicaId>,
+    voted_for_this_term: Option<Arc<ReplicaId>>,
 }
 
 impl VolatileLocalState {
@@ -55,7 +68,7 @@ impl PersistentLocalState for VolatileLocalState {
     fn store_vote_for_term_if_unvoted(&mut self, expected_term: Term, vote: ReplicaId) -> bool {
         if expected_term == self.current_term {
             if self.voted_for_this_term.is_none() {
-                self.voted_for_this_term.replace(vote);
+                self.voted_for_this_term.replace(Arc::new(vote));
                 true
             } else {
                 false
@@ -69,7 +82,7 @@ impl PersistentLocalState for VolatileLocalState {
         self.current_term
     }
 
-    fn voted_for_current_term(&self) -> (Term, Option<&ReplicaId>) {
-        (self.current_term, self.voted_for_this_term.as_ref())
+    fn voted_for_current_term(&self) -> (Term, Option<Arc<ReplicaId>>) {
+        (self.current_term, self.voted_for_this_term.clone())
     }
 }

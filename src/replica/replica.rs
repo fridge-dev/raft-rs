@@ -140,8 +140,10 @@ where
             return Err(RequestVoteError::CandidateNotInCluster);
         }
 
+        // Read our local term/vote state as 1 atomic action.
+        let (current_term, opt_voted_for) = self.local_state.voted_for_current_term();
+
         // 1. Reply false if term < currentTerm (§5.1)
-        let current_term = self.local_state.current_term();
         if input.candidate_term < current_term {
             return Err(RequestVoteError::RequestTermOutOfDate(TermOutOfDateInfo {
                 current_term,
@@ -159,7 +161,6 @@ where
         // least as up-to-date as receiver’s log, grant vote (§5.2, §5.4).
 
         // If votedFor is null or candidateId, and...
-        let (_, opt_voted_for) = self.local_state.voted_for_current_term(); // TODO:1 replace method
         let can_vote_for_candidate = match opt_voted_for {
             None => true,
             Some(voted_for) => *voted_for == input.candidate_id,
