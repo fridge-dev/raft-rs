@@ -185,11 +185,6 @@ where
         }
 
         // ...grant vote
-        // TODO:2 Idk why I initially wrote "_if_unvoted" here. We've already validated above
-        //        that we haven't voted. I guess because we can't easily guarantee atomic or
-        //        exclusive write to disk? We'll see if this is still needed.
-        //        Edit: I guess it's possible that this is retry from our already-voted-for
-        //        candidate, and we should handle it idempotent-ly.
         let cas_success = self
             .local_state
             .store_vote_for_term_if_unvoted(input.candidate_term, input.candidate_id.clone());
