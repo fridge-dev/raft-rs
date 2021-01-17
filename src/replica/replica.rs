@@ -154,7 +154,7 @@ where
         // > set currentTerm = T, convert to follower (§5.1)
         let increased = self.local_state.store_term_if_increased(input.candidate_term);
         if increased {
-            self.election_state.transition_to_follower();
+            self.election_state.transition_to_follower(None);
         }
 
         // 2. If votedFor is null or candidateId, and candidate’s log is at
@@ -230,7 +230,8 @@ where
         // > set currentTerm = T, convert to follower (§5.1)
         let increased = self.local_state.store_term_if_increased(input.leader_term);
         if increased {
-            self.election_state.transition_to_follower();
+            self.election_state
+                .transition_to_follower(Some(input.leader_id.clone()));
         }
 
         // 2. Reply false if [my] log doesn't contain an entry at [leader's]

@@ -23,19 +23,22 @@ impl ElectionState {
         match state {
             State::Leader(_) => CurrentLeader::Me,
             State::Candidate(_) => CurrentLeader::Unknown,
-            State::Follower(FollowerState { leader: None, .. }) => CurrentLeader::Unknown,
+            State::Follower(FollowerState { leader_id: None, .. }) => CurrentLeader::Unknown,
             State::Follower(FollowerState {
-                leader: Some(leader_id),
+                leader_id: Some(leader_id),
                 ..
             }) => CurrentLeader::Other(leader_id.clone()),
         }
     }
 
-    pub fn transition_to_follower(&mut self) {
-        self.do_transition(|state| state.into_follower());
+    pub fn transition_to_follower(&mut self, new_leader_id: Option<ReplicaId>) {
+        self.do_transition(|state| state.into_follower(new_leader_id));
     }
 
-    fn do_transition(&mut self, transition: fn(State) -> State) {
+    fn do_transition<F>(&mut self, transition: F)
+    where
+        F: FnOnce(State) -> State,
+    {
         let mut state = self
             .state
             .take()
@@ -60,11 +63,15 @@ enum State {
 }
 
 impl State {
-    pub fn into_follower(self) -> Self {
+    pub fn into_follower(self, new_leader_id: Option<ReplicaId>) -> Self {
         match self {
-            State::Leader(leader) => State::Follower(leader.into_follower()),
-            State::Candidate(candidate) => State::Follower(candidate.into_follower()),
-            State::Follower(follower) => State::Follower(follower),
+            // TODO:3 consider making a trait like below as an experiment in readability.
+            //        `IntoFollower { fn into_follower(self, ...) -> FollowerState }`
+            //        Or consider changing `ElectionState.transition_to_follower` to directly
+            //        create follower state :P
+            State::Leader(leader) => State::Follower(leader.into_follower(new_leader_id)),
+            State::Candidate(candidate) => State::Follower(candidate.into_follower(new_leader_id)),
+            State::Follower(follower) => State::Follower(follower.into_follower(new_leader_id)),
         }
     }
 }
@@ -88,14 +95,14 @@ impl LeaderServerView {
 }
 
 impl LeaderState {
-    pub fn new(/* TODO:1 peers should be listed here*/) -> Self {
+    pub fn new(/* TODO:1.5 peers should be listed here*/) -> Self {
         LeaderState {
             peer_state: HashMap::new(),
         }
     }
 
-    pub fn into_follower(self) -> FollowerState {
-        FollowerState::new()
+    pub fn into_follower(self, new_leader_id: Option<ReplicaId>) -> FollowerState {
+        FollowerState::with_leader_info(new_leader_id)
     }
 }
 
@@ -106,21 +113,28 @@ impl CandidateState {
         LeaderState::new()
     }
 
-    pub fn into_follower(self) -> FollowerState {
-        FollowerState::new()
+    pub fn into_follower(self, new_leader_id: Option<ReplicaId>) -> FollowerState {
+        FollowerState::with_leader_info(new_leader_id)
     }
 
     // into_candidate? split vote?
 }
 
 struct FollowerState {
-    leader: Option<ReplicaId>,
+    leader_id: Option<ReplicaId>,
 }
 
 impl FollowerState {
-    // TODO:1 transition to follower with known leader
     pub fn new() -> Self {
-        FollowerState { leader: None }
+        FollowerState { leader_id: None }
+    }
+
+    pub fn with_leader_info(leader_id: Option<ReplicaId>) -> Self {
+        FollowerState { leader_id }
+    }
+
+    pub fn into_follower(self, new_leader_id: Option<ReplicaId>) -> FollowerState {
+        Self::with_leader_info(new_leader_id)
     }
 
     pub fn into_candidate(self) -> CandidateState {
