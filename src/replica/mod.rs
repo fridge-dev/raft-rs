@@ -56,15 +56,20 @@
 //!   definition of use case. What I'm imagining (endpoint = ip/port):
 //!     1. Generic raft library that uses RPC/HTTP on {raft_endpoint} to coordinate with peers. Simply
 //!        replicates blobs.
-//!     2. Application is a web service over {app_endpoint} that uses raft lib and provides a strictly
-//!        serializable key-value store. Its APIs can redirect to the correct leader {app_endpoint}
-//!        based on cached data from the raft library. It is not fully cluster aware, it just needs
-//!        to remember the most recent leader and keep using that until the backend redirects. Client
-//!        can make request to any host's {app_endpoint} and the Application will take care of routing
-//!        to the correct {raft_endpoint} leader. This way, the cluster could actually just sit behind
-//!        a load balancer and clients call the load balancer or clients call any host in the cluster
-//!        and it just works.
-//!     3. Some client needs KV store, so they call Application on {app_endpoint} from 2. Their
+//!     2. There is an application specific backend RPC server on {app_be_endpoint}. It validates/accepts
+//!        transitions with app-specific logic to provide a strictly serializable key-value store.
+//!        It calls into raft lib. It does not follow redirects.
+//!     3. Application is a web service over {app_fe_endpoint} that exposes the API to external service
+//!        clients. It does basic frontend stuff (authN, authZ, throttling, etc) and then forwards
+//!        request to the correct {app_be_endpoint}. Internally, it will follow redirects from the
+//!        {app_be_endpoint}. It is not fully cluster aware, it just needs to remember the most recent
+//!        leader and keep using that until the backend redirects. It can discover the initial leader
+//!        at application startup by trying to call the localhost {app_be_endpoint}. Since this layer
+//!        follows redirects, a client can make request to any host's {app_fe_endpoint} and the
+//!        Application will take care of routing to the correct {app_be_endpoint} leader. This way,
+//!        the cluster could actually just sit behind a load balancer and clients call the load balancer
+//!        or clients call any host in the cluster and it just works.
+//!     4. Some client needs KV store, so they call Application on {app_fe_endpoint} from 3. Their
 //!        connection will never need to be redirected.
 //!
 //! `RaftRpcServer`
