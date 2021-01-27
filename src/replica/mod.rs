@@ -120,6 +120,7 @@ mod local_state;
 mod peers;
 mod raft_rpcs;
 mod replica;
+mod peer_client;
 
 pub use commit_log::RaftLogEntry;
 pub use local_state::PersistentLocalState;
