@@ -55,30 +55,6 @@ where
         }
     }
 
-    // > Raft determines which of two logs is more up-to-date
-    // > by comparing the index and term of the last entries in the
-    // > logs. If the logs have last entries with different terms, then
-    // > the log with the later term is more up-to-date. If the logs
-    // > end with the same term, then whichever log is longer is
-    // > more up-to-date.
-    fn is_candidate_more_up_to_date_than_me(
-        &self,
-        candidate_last_entry_term: Term,
-        candidate_last_entry_index: Index,
-    ) -> bool {
-        if let Some((my_last_entry_term, my_last_entry_index)) = self.commit_log.latest_entry() {
-            if candidate_last_entry_term > my_last_entry_term {
-                return true;
-            } else if candidate_last_entry_term < my_last_entry_term {
-                return false;
-            }
-
-            candidate_last_entry_index > my_last_entry_index
-        } else {
-            true
-        }
-    }
-
     pub fn write_to_log(&mut self, input: WriteToLogInput) -> Result<WriteToLogOutput, WriteToLogError> {
         // Leader check
         match self.election_state.current_leader() {
@@ -91,6 +67,8 @@ where
                     });
                 }
                 None => {
+                    // This branch should technically be impossible.
+                    // TODO:2.5 We can code-ify that by changing FollowerState to have IpAddr as well.
                     return Err(WriteToLogError::NoLeader);
                 }
             },
@@ -131,6 +109,34 @@ where
 
     fn replicate_new_entry(&self, _entry_index: Index, _entry_term: Term, _entry_data: Bytes) {
         // TODO:2 (after gRPC setup and threading/timers) replicate entries
+    }
+
+    pub fn local_state_machine(&self) -> &M {
+        self.commit_log.state_machine()
+    }
+
+    // > Raft determines which of two logs is more up-to-date
+    // > by comparing the index and term of the last entries in the
+    // > logs. If the logs have last entries with different terms, then
+    // > the log with the later term is more up-to-date. If the logs
+    // > end with the same term, then whichever log is longer is
+    // > more up-to-date.
+    fn is_candidate_more_up_to_date_than_me(
+        &self,
+        candidate_last_entry_term: Term,
+        candidate_last_entry_index: Index,
+    ) -> bool {
+        if let Some((my_last_entry_term, my_last_entry_index)) = self.commit_log.latest_entry() {
+            if candidate_last_entry_term > my_last_entry_term {
+                return true;
+            } else if candidate_last_entry_term < my_last_entry_term {
+                return false;
+            }
+
+            candidate_last_entry_index > my_last_entry_index
+        } else {
+            true
+        }
     }
 }
 

@@ -121,6 +121,7 @@ impl CandidateState {
 }
 
 struct FollowerState {
+    // TODO:2.5 change to have Optional<(ReplicaId, IpAddr)>
     leader_id: Option<ReplicaId>,
 }
 

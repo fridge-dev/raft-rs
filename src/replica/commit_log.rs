@@ -42,7 +42,7 @@ where
 {
     pub fn new(log: L, state_machine: M) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
-        assert_eq!(log.next_index(), Index::new(0));
+        assert_eq!(log.next_index(), Index::new(1));
 
         RaftLog {
             log,
@@ -51,6 +51,10 @@ where
             commit_index: Index::new(0),
             last_applied_index: Index::new(0),
         }
+    }
+
+    pub fn state_machine(&self) -> &M {
+        &self.state_machine
     }
 
     pub fn latest_entry(&self) -> Option<(Term, Index)> {

@@ -1,5 +1,5 @@
 [package]
-name = "raft-rs"
+name = "raft"
 version = "0.1.0"
 authors = ["Alec Von Arx <al.vonarx+fridge-dev@gmail.com>"]
 edition = "2018"

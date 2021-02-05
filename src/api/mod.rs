@@ -2,10 +2,9 @@
 mod client;
 mod configuration;
 mod factory;
-mod placeholder_impl;
 mod state_machine;
 
-pub use client::RaftClientApi;
+pub use client::ReplicatedStateMachine;
 pub use client::WriteToLogError;
 pub use client::WriteToLogInput;
 pub use client::WriteToLogOutput;

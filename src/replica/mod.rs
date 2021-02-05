@@ -117,10 +117,10 @@
 mod commit_log;
 mod election;
 mod local_state;
+mod peer_client;
 mod peers;
 mod raft_rpcs;
 mod replica;
-mod peer_client;
 
 pub use commit_log::RaftLogEntry;
 pub use local_state::PersistentLocalState;

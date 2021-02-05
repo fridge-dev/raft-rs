@@ -1,14 +1,14 @@
-use crate::api::placeholder_impl::PlaceholderImpl;
+use crate::api::client::ClientAdapter;
 use crate::commitlog::InMemoryLog;
 use crate::replica::{Cluster, Replica, ReplicaConfig, VolatileLocalState};
-use crate::{LocalStateMachineApplier, RaftClientApi, RaftClientConfig};
+use crate::{LocalStateMachineApplier, RaftClientConfig, ReplicatedStateMachine};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::io;
 
 pub fn create_raft_client<M: 'static>(
     config: RaftClientConfig<M>,
-) -> Result<Box<dyn RaftClientApi>, ClientCreationError>
+) -> Result<Box<dyn ReplicatedStateMachine<M>>, ClientCreationError>
 where
     M: LocalStateMachineApplier,
 {
@@ -23,7 +23,7 @@ where
         state_machine: config.state_machine,
     });
 
-    let client = PlaceholderImpl { replica };
+    let client = ClientAdapter { replica };
 
     Ok(Box::new(client))
 }
