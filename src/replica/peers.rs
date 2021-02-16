@@ -1,6 +1,8 @@
+use crate::replica::peer_client::RaftClient;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::Ipv4Addr;
+use tonic::codegen::http::uri;
 
 /// ReplicaId is kind of like NodeId or ServerId. It is the ID of the entity participating in the
 /// replication cluster.
@@ -17,54 +19,103 @@ impl ReplicaId {
     }
 }
 
+/// ReplicaMetadata is identity/connection metadata describing a replica.
 #[derive(Clone)]
-pub struct ClusterMember {
+pub struct ReplicaMetadata {
     id: ReplicaId,
     ip: Ipv4Addr,
+    port: u16,
 }
 
-impl ClusterMember {
-    pub fn new(replica_id: String, replica_ip: Ipv4Addr) -> Self {
-        ClusterMember {
+impl ReplicaMetadata {
+    pub fn new(replica_id: String, ip_addr: Ipv4Addr, port: u16) -> Self {
+        ReplicaMetadata {
             id: ReplicaId(replica_id),
-            ip: replica_ip,
+            ip: ip_addr,
+            port,
         }
     }
 
     pub fn ip_addr(&self) -> Ipv4Addr {
         self.ip
     }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
 }
 
+/// Peer is a replica that is not me.
+struct Peer {
+    metadata: ReplicaMetadata,
+    client: RaftClient,
+}
+
+/// Cluster is the group of replicas participating in a single instance of raft together.
 pub struct Cluster {
-    my_replica_id: ReplicaId,
-    cluster_members: HashMap<ReplicaId, ClusterMember>,
+    my_replica_metadata: ReplicaMetadata,
+    peers: HashMap<ReplicaId, Peer>,
 }
 
 impl Cluster {
-    /// Ensures that any instance of Cluster has expected properties upheld.
-    pub fn create_valid_cluster(
-        cluster_members: Vec<ClusterMember>,
-        my_replica_id: String,
+    pub async fn create_valid_cluster(
+        my_replica_metadata: ReplicaMetadata,
+        peer_replica_metadata: Vec<ReplicaMetadata>,
     ) -> Result<Self, InvalidCluster> {
-        let cluster_members_by_id = map_with_unique_index(cluster_members, |m| m.id.clone())
-            .map_err(|dupe| InvalidCluster::DuplicateReplicaId(dupe.0))?;
+        let cluster_members_by_id = map_with_unique_index(peer_replica_metadata, |m| m.id.clone())
+            .map_err(|dupe| InvalidCluster::DuplicateReplicaId(dupe.into_inner()))?;
 
-        let my_replica_id_typed = ReplicaId(my_replica_id);
-
-        // We might need to relax this later when adding membership changes.
-        if !cluster_members_by_id.contains_key(&my_replica_id_typed) {
-            return Err(InvalidCluster::MeNotInCluster);
+        if cluster_members_by_id.contains_key(&my_replica_metadata.id) {
+            return Err(InvalidCluster::DuplicateReplicaId(my_replica_metadata.id.into_inner()));
         }
 
+        let peers = Cluster::create_peers(cluster_members_by_id).await?;
+
         Ok(Cluster {
-            my_replica_id: my_replica_id_typed,
-            cluster_members: cluster_members_by_id,
+            my_replica_metadata,
+            peers,
         })
     }
 
-    pub(super) fn destruct(self) -> (ReplicaId, HashMap<ReplicaId, ClusterMember>) {
-        (self.my_replica_id, self.cluster_members)
+    async fn create_peers(
+        cluster_members_by_id: HashMap<ReplicaId, ReplicaMetadata>,
+    ) -> Result<HashMap<ReplicaId, Peer>, InvalidCluster> {
+        let mut peers: HashMap<ReplicaId, Peer> = HashMap::with_capacity(cluster_members_by_id.len());
+        for (peer_replica_id, peer_md) in cluster_members_by_id.into_iter() {
+            let peer = Self::make_peer(peer_md).await?;
+            peers.insert(peer_replica_id, peer);
+        }
+        Ok(peers)
+    }
+
+    async fn make_peer(peer_md: ReplicaMetadata) -> Result<Peer, InvalidCluster> {
+        let uri = Self::make_uri(peer_md.ip, peer_md.port)?;
+        let client = RaftClient::new(uri).await;
+        Ok(Peer {
+            metadata: peer_md,
+            client,
+        })
+    }
+
+    fn make_uri(ip: Ipv4Addr, port: u16) -> Result<uri::Uri, uri::InvalidUri> {
+        let ip_octets = ip.octets();
+        let url = format!(
+            "http://{}.{}.{}.{}:{}",
+            ip_octets[0], ip_octets[1], ip_octets[2], ip_octets[3], port
+        );
+        uri::Uri::from_maybe_shared(url)
+    }
+
+    pub fn my_replica_id(&self) -> &ReplicaId {
+        &self.my_replica_metadata.id
+    }
+
+    pub fn get_metadata(&self, id: &ReplicaId) -> Option<&ReplicaMetadata> {
+        self.peers.get(id).map(|peer| &peer.metadata)
+    }
+
+    pub fn contains_member(&self, id: &ReplicaId) -> bool {
+        self.peers.contains_key(id)
     }
 }
 
@@ -72,8 +123,8 @@ impl Cluster {
 pub enum InvalidCluster {
     #[error("duplicate replica '{0}' in cluster config")]
     DuplicateReplicaId(String),
-    #[error("my replica ID not in cluster config")]
-    MeNotInCluster,
+    #[error("invalid URI")]
+    InvalidUri(#[from] uri::InvalidUri),
 }
 
 /// Returns a HashMap that is guaranteed to have uniquely indexed all of the values. If duplicate is

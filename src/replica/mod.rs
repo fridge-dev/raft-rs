@@ -126,7 +126,7 @@ pub use commit_log::RaftLogEntry;
 pub use local_state::PersistentLocalState;
 pub use local_state::VolatileLocalState;
 pub use peers::Cluster;
-pub use peers::ClusterMember;
 pub use peers::InvalidCluster;
+pub use peers::ReplicaMetadata;
 pub use replica::Replica;
 pub use replica::ReplicaConfig;

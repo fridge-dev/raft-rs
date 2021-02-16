@@ -3,10 +3,12 @@ use raft;
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::Ipv4Addr;
+use tokio;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cluster = fake_cluster();
-    let mut server = AccumulatorServer::setup(cluster).expect("WTF");
+    let mut server = AccumulatorServer::setup(cluster).await.expect("WTF");
 
     assert_eq!(100, server.add("k1".into(), 100).unwrap());
     assert_eq!(100, server.add("k2".into(), 100).unwrap());
@@ -17,28 +19,35 @@ fn main() {
 }
 
 fn fake_cluster() -> raft::ClusterInfo {
+    let replica_port = 2021;
+
     raft::ClusterInfo {
         my_replica_id: "id-1".into(),
         cluster_members: vec![
             raft::MemberInfo {
                 replica_id: "id-1".into(),
                 replica_ip_addr: Ipv4Addr::from(0xFACE),
+                replica_port,
             },
             raft::MemberInfo {
                 replica_id: "id-2".into(),
                 replica_ip_addr: Ipv4Addr::from(0xBEEF),
+                replica_port,
             },
             raft::MemberInfo {
                 replica_id: "id-3".into(),
                 replica_ip_addr: Ipv4Addr::from(0x1337),
+                replica_port,
             },
             raft::MemberInfo {
                 replica_id: "id-4".into(),
                 replica_ip_addr: Ipv4Addr::from(0xDEAF),
+                replica_port,
             },
             raft::MemberInfo {
                 replica_id: "id-5".into(),
                 replica_ip_addr: Ipv4Addr::from(0xBEEB),
+                replica_port,
             },
         ],
     }
@@ -81,12 +90,13 @@ pub struct AccumulatorServer {
 }
 
 impl AccumulatorServer {
-    pub fn setup(cluster_info: raft::ClusterInfo) -> Result<Self, Box<dyn Error>> {
+    pub async fn setup(cluster_info: raft::ClusterInfo) -> Result<Self, Box<dyn Error>> {
         let raft = raft::create_raft_client(raft::RaftClientConfig {
             state_machine: AccumulatorStateMachine::default(),
             log_directory: "/raft/".to_string(),
             cluster_info,
-        })?;
+        })
+        .await?;
 
         Ok(AccumulatorServer { raft })
     }

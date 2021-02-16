@@ -1,44 +1,67 @@
 use crate::grpc::grpc_raft_client::GrpcRaftClient;
-use std::error::Error;
-use std::net::Ipv4Addr;
-use tonic::codegen::http::uri;
-use tonic::transport::{Channel, Endpoint};
+use crate::grpc::{ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq, ProtoRequestVoteResult};
+use tonic::transport::{Channel, Endpoint, Uri};
 
+#[derive(Clone)]
 pub struct RaftClient {
-    inner: GrpcRaftClient<Channel>,
+    endpoint: Endpoint,
+    connection: Conn,
+}
+
+/// PeerConnection tracks the lifecycle of a connection. It enables us to start up our
+/// replica even if we can't connect to others.
+#[derive(Clone)]
+enum Conn {
+    Connected(GrpcRaftClient<Channel>),
+    Disconnected,
 }
 
 impl RaftClient {
-    pub async fn new(ip: Ipv4Addr, port: u16) -> Result<Self, ConnectError> {
-        let ip_octets = ip.octets();
-        let url = format!(
-            "http://{}.{}.{}.{}:{}",
-            ip_octets[0], ip_octets[1], ip_octets[2], ip_octets[3], port
-        );
-        println!("Connecting to {} ...", url);
-        let endpoint = Endpoint::from_shared(url)?;
+    pub async fn new(uri: Uri) -> Self {
+        println!("Connecting to {:?} ...", uri);
+        let endpoint = Endpoint::from(uri);
+        let connection = Self::try_connect(&endpoint).await;
 
-        let connection = endpoint.connect().await?;
-
-        Ok(RaftClient {
-            inner: GrpcRaftClient::new(connection),
-        })
+        RaftClient { endpoint, connection }
     }
-}
 
-pub enum ConnectError {
-    InvalidUri(uri::InvalidUri),
-    ConnectFailure(Box<dyn Error>),
-}
+    pub async fn request_vote(
+        &mut self,
+        request: ProtoRequestVoteReq,
+    ) -> Result<ProtoRequestVoteResult, tonic::Status> {
+        self.try_reconnect_if_needed().await;
+        if let Conn::Connected(client) = &mut self.connection {
+            return client.request_vote(request).await.map(|r| r.into_inner());
+        }
 
-impl From<uri::InvalidUri> for ConnectError {
-    fn from(e: uri::InvalidUri) -> Self {
-        ConnectError::InvalidUri(e)
+        return Err(tonic::Status::new(tonic::Code::Unavailable, "couldn't connect"));
     }
-}
 
-impl From<tonic::transport::Error> for ConnectError {
-    fn from(e: tonic::transport::Error) -> Self {
-        ConnectError::ConnectFailure(e.into())
+    pub async fn append_entries(
+        &mut self,
+        request: ProtoAppendEntriesReq,
+    ) -> Result<ProtoAppendEntriesResult, tonic::Status> {
+        self.try_reconnect_if_needed().await;
+        if let Conn::Connected(client) = &mut self.connection {
+            return client.append_entries(request).await.map(|r| r.into_inner());
+        }
+
+        return Err(tonic::Status::new(tonic::Code::Unavailable, "couldn't connect"));
+    }
+
+    async fn try_reconnect_if_needed(&mut self) {
+        if let Conn::Disconnected = self.connection {
+            self.connection = Self::try_connect(&self.endpoint).await;
+        }
+    }
+
+    async fn try_connect(endpoint: &Endpoint) -> Conn {
+        match endpoint.connect().await {
+            Ok(conn) => Conn::Connected(GrpcRaftClient::new(conn)),
+            Err(conn_err) => {
+                println!("Failed to connect to {:?} - {:?}", endpoint, conn_err);
+                Conn::Disconnected
+            }
+        }
     }
 }

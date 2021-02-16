@@ -2,7 +2,7 @@ use crate::commitlog::{Index, Log};
 use crate::replica::commit_log::{RaftLog, RaftLogEntry};
 use crate::replica::election::{CurrentLeader, ElectionState};
 use crate::replica::local_state::{PersistentLocalState, Term};
-use crate::replica::peers::{Cluster, ClusterMember, ReplicaId};
+use crate::replica::peers::{Cluster, ReplicaId};
 use crate::replica::raft_rpcs::{
     AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, RaftRpcHandler, RequestVoteError, RequestVoteInput,
     RequestVoteOutput, TermOutOfDateInfo,
@@ -10,7 +10,6 @@ use crate::replica::raft_rpcs::{
 use crate::{LocalStateMachineApplier, StateMachineOutput, WriteToLogError, WriteToLogInput, WriteToLogOutput};
 use bytes::Bytes;
 use std::cmp;
-use std::collections::HashMap;
 
 pub struct ReplicaConfig<L, S, M>
 where
@@ -31,7 +30,7 @@ where
     M: LocalStateMachineApplier,
 {
     my_replica_id: ReplicaId,
-    cluster_members: HashMap<ReplicaId, ClusterMember>,
+    cluster_members: Cluster,
     local_state: S,
     election_state: ElectionState,
     commit_log: RaftLog<L, M>,
@@ -45,10 +44,10 @@ where
 {
     pub fn new(config: ReplicaConfig<L, S, M>) -> Self {
         let commit_log = RaftLog::new(config.log, config.state_machine);
-        let (my_replica_id, cluster_members) = config.cluster.destruct();
+        let my_replica_id = config.cluster.my_replica_id().clone();
         Replica {
             my_replica_id,
-            cluster_members,
+            cluster_members: config.cluster,
             local_state: config.local_state,
             election_state: ElectionState::new_follower(),
             commit_log,
@@ -59,11 +58,12 @@ where
         // Leader check
         match self.election_state.current_leader() {
             CurrentLeader::Me => { /* carry on */ }
-            CurrentLeader::Other(leader_id) => match self.cluster_members.get(&leader_id) {
+            CurrentLeader::Other(leader_id) => match self.cluster_members.get_metadata(&leader_id) {
                 Some(leader) => {
                     return Err(WriteToLogError::LeaderRedirect {
                         leader_id: leader_id.into_inner(),
                         leader_ip: leader.ip_addr(),
+                        leader_port: leader.port(),
                     });
                 }
                 None => {
@@ -148,7 +148,7 @@ where
 {
     fn handle_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError> {
         // Ensure candidate is known member.
-        if !self.cluster_members.contains_key(&input.candidate_id) {
+        if !self.cluster_members.contains_member(&input.candidate_id) {
             return Err(RequestVoteError::CandidateNotInCluster);
         }
 
@@ -221,7 +221,7 @@ where
 
     fn handle_append_entries(&mut self, input: AppendEntriesInput) -> Result<AppendEntriesOutput, AppendEntriesError> {
         // 0. Ensure candidate is known member.
-        if !self.cluster_members.contains_key(&input.leader_id) {
+        if !self.cluster_members.contains_member(&input.leader_id) {
             return Err(AppendEntriesError::ClientNotInCluster);
         }
 

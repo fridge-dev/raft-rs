@@ -26,7 +26,11 @@ pub struct WriteToLogOutput {
 #[derive(Debug, thiserror::Error)]
 pub enum WriteToLogError {
     #[error("I'm not leader")]
-    LeaderRedirect { leader_id: String, leader_ip: Ipv4Addr },
+    LeaderRedirect {
+        leader_id: String,
+        leader_ip: Ipv4Addr,
+        leader_port: u16,
+    },
 
     // Can be retried with exponential backoff with recommended initial delay of 200ms. Likely an
     // election is in progress.

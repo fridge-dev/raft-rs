@@ -29,8 +29,10 @@ message ProtoRequestVoteReq {
 }
 
 message ProtoRequestVoteResult {
-  ProtoRequestVoteSuccess ok = 1;
-  ProtoRequestVoteError err = 2;
+  oneof result {
+    ProtoRequestVoteSuccess ok = 1;
+    ProtoRequestVoteError err = 2;
+  }
 }
 
 message ProtoRequestVoteSuccess {
@@ -51,8 +53,10 @@ message ProtoAppendEntriesReq {
 }
 
 message ProtoAppendEntriesResult {
-  ProtoAppendEntriesSuccess ok = 1;
-  ProtoAppendEntriesError err = 2;
+  oneof result {
+    ProtoAppendEntriesSuccess ok = 1;
+    ProtoAppendEntriesError err = 2;
+  }
 }
 
 message ProtoAppendEntriesSuccess {

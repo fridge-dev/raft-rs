@@ -1,10 +1,6 @@
 //! This mod is responsible for configuring and creating an instance of `RaftClientApi` for application to use.
 
-use crate::api::factory::ClientCreationError;
 use crate::api::state_machine::LocalStateMachineApplier;
-use crate::replica;
-use crate::replica::Cluster;
-use std::convert::TryFrom;
 use std::net::Ipv4Addr;
 
 pub struct RaftClientConfig<M>
@@ -25,25 +21,5 @@ pub struct ClusterInfo {
 pub struct MemberInfo {
     pub replica_id: String,
     pub replica_ip_addr: Ipv4Addr,
-}
-
-impl TryFrom<ClusterInfo> for replica::Cluster {
-    type Error = ClientCreationError;
-
-    fn try_from(cluster_info: ClusterInfo) -> Result<Self, Self::Error> {
-        let members = cluster_info
-            .cluster_members
-            .into_iter()
-            .map(|member| member.into())
-            .collect();
-
-        Cluster::create_valid_cluster(members, cluster_info.my_replica_id)
-            .map_err(|e| ClientCreationError::InvalidClusterInfo(e.into()))
-    }
-}
-
-impl From<MemberInfo> for replica::ClusterMember {
-    fn from(member_info: MemberInfo) -> Self {
-        replica::ClusterMember::new(member_info.replica_id, member_info.replica_ip_addr)
-    }
+    pub replica_port: u16,
 }
