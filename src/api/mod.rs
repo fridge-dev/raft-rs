@@ -5,9 +5,9 @@ mod factory;
 mod state_machine;
 
 pub use client::ReplicatedStateMachine;
-pub use client::WriteToLogError;
-pub use client::WriteToLogInput;
-pub use client::WriteToLogOutput;
+pub use client::WriteToLogApiError;
+pub use client::WriteToLogApiInput;
+pub use client::WriteToLogApiOutput;
 pub use configuration::ClusterInfo;
 pub use configuration::MemberInfo;
 pub use configuration::RaftClientConfig;

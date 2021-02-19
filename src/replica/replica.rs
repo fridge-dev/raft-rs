@@ -3,13 +3,14 @@ use crate::replica::commit_log::{RaftLog, RaftLogEntry};
 use crate::replica::election::{CurrentLeader, ElectionState};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peers::{Cluster, ReplicaId};
-use crate::replica::raft_rpcs::{
-    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, RaftRpcHandler, RequestVoteError, RequestVoteInput,
-    RequestVoteOutput, TermOutOfDateInfo,
+use crate::replica::replica_api::{
+    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, RequestVoteError, RequestVoteInput,
+    RequestVoteOutput, TermOutOfDateInfo, WriteToLogInput, WriteToLogOutput, WriteToLogError, RequestVoteResultFromPeerInput, AppendEntriesResultFromPeerInput,
 };
-use crate::{LocalStateMachineApplier, StateMachineOutput, WriteToLogError, WriteToLogInput, WriteToLogOutput};
+use crate::{LocalStateMachineApplier, StateMachineOutput};
 use bytes::Bytes;
 use std::cmp;
+use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
 
 pub struct ReplicaConfig<L, S, M>
 where
@@ -107,46 +108,31 @@ where
         Ok(WriteToLogOutput { applier_output })
     }
 
-    fn replicate_new_entry(&self, _entry_index: Index, _entry_term: Term, _entry_data: Bytes) {
-        // TODO:2 (after gRPC setup and threading/timers) replicate entries
-    }
+    fn replicate_new_entry(&mut self, _entry_index: Index, entry_term: Term, entry_data: Bytes) {
+        let current_term = self.local_state.current_term().into_inner();
+        let commit_index = self.commit_log.commit_index().val();
+        let (previous_log_entry_term, previous_log_entry_index) = match self.commit_log.latest_entry() {
+            None => (0, 0),
+            Some((term, idx)) => (term.into_inner(), idx.val()),
+        };
 
-    pub fn local_state_machine(&self) -> &M {
-        self.commit_log.state_machine()
-    }
-
-    // > Raft determines which of two logs is more up-to-date
-    // > by comparing the index and term of the last entries in the
-    // > logs. If the logs have last entries with different terms, then
-    // > the log with the later term is more up-to-date. If the logs
-    // > end with the same term, then whichever log is longer is
-    // > more up-to-date.
-    fn is_candidate_more_up_to_date_than_me(
-        &self,
-        candidate_last_entry_term: Term,
-        candidate_last_entry_index: Index,
-    ) -> bool {
-        if let Some((my_last_entry_term, my_last_entry_index)) = self.commit_log.latest_entry() {
-            if candidate_last_entry_term > my_last_entry_term {
-                return true;
-            } else if candidate_last_entry_term < my_last_entry_term {
-                return false;
-            }
-
-            candidate_last_entry_index > my_last_entry_index
-        } else {
-            true
+        for peer in self.cluster_members.iter_peers() {
+            let req = ProtoAppendEntriesReq {
+                client_node_id: self.my_replica_id.clone().into_inner(),
+                term: current_term,
+                commit_index,
+                previous_log_entry_term,
+                previous_log_entry_index,
+                new_entries: vec![ProtoLogEntry {
+                    term: entry_term.into_inner(),
+                    data: entry_data.to_vec(),
+                }]
+            };
+            let _unpolled_future = peer.client.append_entries(req);
         }
     }
-}
 
-impl<L, S, M> RaftRpcHandler for Replica<L, S, M>
-where
-    L: Log<RaftLogEntry>,
-    S: PersistentLocalState,
-    M: LocalStateMachineApplier,
-{
-    fn handle_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError> {
+    pub fn handle_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError> {
         // Ensure candidate is known member.
         if !self.cluster_members.contains_member(&input.candidate_id) {
             return Err(RequestVoteError::CandidateNotInCluster);
@@ -219,7 +205,11 @@ where
         Ok(RequestVoteOutput { vote_granted: false })
     }
 
-    fn handle_append_entries(&mut self, input: AppendEntriesInput) -> Result<AppendEntriesOutput, AppendEntriesError> {
+    pub fn request_vote_result_from_peer(&mut self, _input: RequestVoteResultFromPeerInput) {
+        unimplemented!()
+    }
+
+    pub fn handle_append_entries(&mut self, input: AppendEntriesInput) -> Result<AppendEntriesOutput, AppendEntriesError> {
         // 0. Ensure candidate is known member.
         if !self.cluster_members.contains_member(&input.leader_id) {
             return Err(AppendEntriesError::ClientNotInCluster);
@@ -318,5 +308,45 @@ where
         }
 
         return output;
+    }
+
+    pub fn append_entries_result_from_peer(&mut self, _input: AppendEntriesResultFromPeerInput) {
+        unimplemented!()
+    }
+
+    pub fn leader_timer(&mut self) {
+        unimplemented!()
+    }
+
+    pub fn follower_timeout(&mut self) {
+        unimplemented!()
+    }
+
+    pub fn local_state_machine(&self) -> &M {
+        self.commit_log.state_machine()
+    }
+
+    // > Raft determines which of two logs is more up-to-date
+    // > by comparing the index and term of the last entries in the
+    // > logs. If the logs have last entries with different terms, then
+    // > the log with the later term is more up-to-date. If the logs
+    // > end with the same term, then whichever log is longer is
+    // > more up-to-date.
+    fn is_candidate_more_up_to_date_than_me(
+        &self,
+        candidate_last_entry_term: Term,
+        candidate_last_entry_index: Index,
+    ) -> bool {
+        if let Some((my_last_entry_term, my_last_entry_index)) = self.commit_log.latest_entry() {
+            if candidate_last_entry_term > my_last_entry_term {
+                return true;
+            } else if candidate_last_entry_term < my_last_entry_term {
+                return false;
+            }
+
+            candidate_last_entry_index > my_last_entry_index
+        } else {
+            true
+        }
     }
 }

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::Ipv4Addr;
 use tonic::codegen::http::uri;
+use std::collections::hash_map::ValuesMut;
 
 /// ReplicaId is kind of like NodeId or ServerId. It is the ID of the entity participating in the
 /// replication cluster.
@@ -46,9 +47,9 @@ impl ReplicaMetadata {
 }
 
 /// Peer is a replica that is not me.
-struct Peer {
-    metadata: ReplicaMetadata,
-    client: RaftClient,
+pub struct Peer {
+    pub metadata: ReplicaMetadata,
+    pub client: RaftClient,
 }
 
 /// Cluster is the group of replicas participating in a single instance of raft together.
@@ -116,6 +117,11 @@ impl Cluster {
 
     pub fn contains_member(&self, id: &ReplicaId) -> bool {
         self.peers.contains_key(id)
+    }
+
+    // Exposing HashMap type, but experimenting with this style.
+    pub fn iter_peers(&mut self) -> ValuesMut<'_, ReplicaId, Peer> {
+        self.peers.values_mut()
     }
 }
 

@@ -10,9 +10,9 @@ async fn main() {
     let cluster = fake_cluster();
     let mut server = AccumulatorServer::setup(cluster).await.expect("WTF");
 
-    assert_eq!(100, server.add("k1".into(), 100).unwrap());
-    assert_eq!(100, server.add("k2".into(), 100).unwrap());
-    assert_eq!(-1, server.add("k1".into(), -101).unwrap());
+    assert_eq!(100, server.add("k1".into(), 100).await.unwrap());
+    assert_eq!(100, server.add("k2".into(), 100).await.unwrap());
+    assert_eq!(-1, server.add("k1".into(), -101).await.unwrap());
 
     assert_eq!(-1, server.get("k1"));
     assert_eq!(100, server.get("k2"));
@@ -101,10 +101,10 @@ impl AccumulatorServer {
         Ok(AccumulatorServer { raft })
     }
 
-    pub fn add(&mut self, key: String, value: i64) -> Result<i64, Box<dyn Error>> {
+    pub async fn add(&mut self, key: String, value: i64) -> Result<i64, Box<dyn Error>> {
         let data = encode_kv(key, value);
-        let input = raft::WriteToLogInput { data };
-        let output = self.raft.execute(input)?;
+        let input = raft::WriteToLogApiInput { data };
+        let output = self.raft.execute(input).await?;
         Ok(decode_v(output.applier_output))
     }
 

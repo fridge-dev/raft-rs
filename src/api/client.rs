@@ -1,30 +1,33 @@
 use crate::api::state_machine::LocalStateMachineApplier;
-use crate::commitlog::Log;
-use crate::replica::{PersistentLocalState, RaftLogEntry, Replica};
 use bytes::Bytes;
-use std::error::Error;
 use std::io;
 use std::net::Ipv4Addr;
+use crate::actor::ActorClient;
+use crate::replica;
 
 // For external application to call into this library.
+// TODO:2 Pretty much everything in this file needs rename. :P For now just make it distinct.
+#[async_trait::async_trait]
 pub trait ReplicatedStateMachine<M>
 where
-    M: LocalStateMachineApplier,
+    M: LocalStateMachineApplier + Send,
 {
-    fn execute(&mut self, input: WriteToLogInput) -> Result<WriteToLogOutput, WriteToLogError>;
-    fn local_state_machine(&self) -> &M;
+    async fn execute(&self, input: WriteToLogApiInput) -> Result<WriteToLogApiOutput, WriteToLogApiError>;
+    fn local_state_machine(&self) -> &M; // Need better read API. I won't be able to do this.
 }
 
-pub struct WriteToLogInput {
+#[derive(Debug)]
+pub struct WriteToLogApiInput {
     pub data: Bytes,
 }
 
-pub struct WriteToLogOutput {
+#[derive(Debug)]
+pub struct WriteToLogApiOutput {
     pub applier_output: Bytes,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum WriteToLogError {
+pub enum WriteToLogApiError {
     #[error("I'm not leader")]
     LeaderRedirect {
         leader_id: String,
@@ -42,30 +45,42 @@ pub enum WriteToLogError {
 
     // For unexpected failures.
     #[error("I'm leader, but couldn't replicate data to majority. Some unexpected failure. Idk.")]
-    ReplicationError(Box<dyn Error>),
+    ReplicationError(/* TODO */),
 }
 
-/// ClientAdapter adapts the `Replica` logic to the `ReplicatedStateMachine` interface.
-pub struct ClientAdapter<L, S, M>
-where
-    L: Log<RaftLogEntry>,
-    S: PersistentLocalState,
-    M: LocalStateMachineApplier,
-{
-    pub replica: Replica<L, S, M>,
+/// ClientAdapter adapts the `ActorClient` API to the `ReplicatedStateMachine` API.
+pub struct ClientAdapter {
+    pub actor_client: ActorClient,
 }
 
-impl<L, S, M> ReplicatedStateMachine<M> for ClientAdapter<L, S, M>
+#[async_trait::async_trait]
+impl<M: 'static> ReplicatedStateMachine<M> for ClientAdapter
 where
-    L: Log<RaftLogEntry>,
-    S: PersistentLocalState,
-    M: LocalStateMachineApplier,
+    M: LocalStateMachineApplier + Send,
 {
-    fn execute(&mut self, input: WriteToLogInput) -> Result<WriteToLogOutput, WriteToLogError> {
-        self.replica.write_to_log(input)
+    async fn execute(&self, input: WriteToLogApiInput) -> Result<WriteToLogApiOutput, WriteToLogApiError> {
+        let replica_input = replica::WriteToLogInput {
+            data: input.data,
+        };
+
+        self.actor_client.write_to_log(replica_input)
+            .await
+            .map(|o| WriteToLogApiOutput {
+                applier_output: o.applier_output,
+            })
+            .map_err(|e| match e {
+                replica::WriteToLogError::LeaderRedirect { leader_id, leader_ip, leader_port } => WriteToLogApiError::LeaderRedirect {
+                    leader_id,
+                    leader_ip,
+                    leader_port,
+                },
+                replica::WriteToLogError::NoLeader => WriteToLogApiError::NoLeader,
+                replica::WriteToLogError::LocalIoError(e2) => WriteToLogApiError::LocalIoError(e2),
+                replica::WriteToLogError::ReplicationError() => WriteToLogApiError::ReplicationError(),
+            })
     }
 
     fn local_state_machine(&self) -> &M {
-        self.replica.local_state_machine()
+        unimplemented!()
     }
 }

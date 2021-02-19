@@ -119,8 +119,8 @@ mod election;
 mod local_state;
 mod peer_client;
 mod peers;
-mod raft_rpcs;
 mod replica;
+mod replica_api;
 
 pub use commit_log::RaftLogEntry;
 pub use local_state::PersistentLocalState;
@@ -130,3 +130,4 @@ pub use peers::InvalidCluster;
 pub use peers::ReplicaMetadata;
 pub use replica::Replica;
 pub use replica::ReplicaConfig;
+pub use replica_api::*;

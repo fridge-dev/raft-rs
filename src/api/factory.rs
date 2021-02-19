@@ -1,15 +1,16 @@
-use crate::api::client::ClientAdapter;
 use crate::commitlog::InMemoryLog;
 use crate::replica::{Cluster, Replica, ReplicaConfig, VolatileLocalState};
 use crate::{api, replica, LocalStateMachineApplier, RaftClientConfig, ReplicatedStateMachine};
 use std::error::Error;
 use std::io;
+use crate::api::client::ClientAdapter;
+use crate::actor;
 
 pub async fn create_raft_client<M: 'static>(
     config: RaftClientConfig<M>,
 ) -> Result<Box<dyn ReplicatedStateMachine<M>>, ClientCreationError>
 where
-    M: LocalStateMachineApplier,
+    M: LocalStateMachineApplier + Send,
 {
     let log = InMemoryLog::create().map_err(|e| ClientCreationError::LogInitialization(e))?;
 
@@ -22,7 +23,10 @@ where
         state_machine: config.state_machine,
     });
 
-    let client = ClientAdapter { replica };
+    let (actor_client, replica_actor) = actor::create(10, replica);
+    tokio::spawn(replica_actor.run_event_loop());
+
+    let client = ClientAdapter { actor_client };
 
     Ok(Box::new(client))
 }
