@@ -1,33 +1,83 @@
-use crate::api::state_machine::LocalStateMachineApplier;
+use crate::actor::ActorClient;
+use crate::commitlog::Index;
+use crate::replica;
+use crate::replica::Term;
 use bytes::Bytes;
 use std::io;
 use std::net::Ipv4Addr;
-use crate::actor::ActorClient;
-use crate::replica;
+use tokio::sync::mpsc;
+
+pub fn create_commit_stream() -> (CommitStreamPublisher, CommitStream) {
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    let applier_sender = CommitStreamPublisher { sender: tx };
+    let applier_receiver = CommitStream { receiver: rx };
+
+    (applier_sender, applier_receiver)
+}
+
+pub struct CommitStreamPublisher {
+    sender: mpsc::UnboundedSender<CommittedEntry>,
+}
+
+impl CommitStreamPublisher {
+    pub fn notify_commit(&self, result: CommittedEntry) {
+        if let Err(_) = self.sender.send(result) {
+            println!("CommitStream has disconnected.");
+        }
+    }
+}
 
 // For external application to call into this library.
-// TODO:2 Pretty much everything in this file needs rename. :P For now just make it distinct.
+pub struct CommitStream {
+    receiver: mpsc::UnboundedReceiver<CommittedEntry>,
+}
+
+pub struct CommittedEntry {
+    pub key: EntryKey,
+    pub data: Bytes,
+}
+
+impl CommitStream {
+    // TODO:3 How to handle when we accepted entry for repl, then lost leadership?
+    //        Do we just *not* inform app layer?
+    /// next returns the next committed entry to be applied to your application's state machine.
+    pub async fn next(&mut self) -> CommittedEntry {
+        self.receiver
+            .recv()
+            .await
+            .expect("Replica event loop should never exit.")
+    }
+}
+
+// For external application to call into this library.
 #[async_trait::async_trait]
-pub trait ReplicatedStateMachine<M>
-where
-    M: LocalStateMachineApplier + Send,
-{
-    async fn execute(&self, input: WriteToLogApiInput) -> Result<WriteToLogApiOutput, WriteToLogApiError>;
-    fn local_state_machine(&self) -> &M; // Need better read API. I won't be able to do this.
+pub trait ReplicatedLog {
+    async fn start_replication(
+        &self,
+        input: StartReplicationInput,
+    ) -> Result<StartReplicationOutput, StartReplicationError>;
 }
 
 #[derive(Debug)]
-pub struct WriteToLogApiInput {
+pub struct StartReplicationInput {
     pub data: Bytes,
 }
 
 #[derive(Debug)]
-pub struct WriteToLogApiOutput {
-    pub applier_output: Bytes,
+pub struct StartReplicationOutput {
+    pub key: EntryKey,
+}
+
+// Opaque type for application to match EndReplicationMessage with.
+#[derive(Debug, PartialEq)]
+pub struct EntryKey {
+    pub(crate) term: Term,
+    pub(crate) entry_index: Index,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum WriteToLogApiError {
+pub enum StartReplicationError {
     #[error("I'm not leader")]
     LeaderRedirect {
         leader_id: String,
@@ -40,12 +90,9 @@ pub enum WriteToLogApiError {
     #[error("Cluster is in a tough shape. No one is leader.")]
     NoLeader,
 
+    // Might be unneeded, if Replica event loop doesn't sync write to disk.
     #[error("Failed to persist log")]
     LocalIoError(io::Error),
-
-    // For unexpected failures.
-    #[error("I'm leader, but couldn't replicate data to majority. Some unexpected failure. Idk.")]
-    ReplicationError(/* TODO */),
 }
 
 /// ClientAdapter adapts the `ActorClient` API to the `ReplicatedStateMachine` API.
@@ -54,33 +101,34 @@ pub struct ClientAdapter {
 }
 
 #[async_trait::async_trait]
-impl<M: 'static> ReplicatedStateMachine<M> for ClientAdapter
-where
-    M: LocalStateMachineApplier + Send,
-{
-    async fn execute(&self, input: WriteToLogApiInput) -> Result<WriteToLogApiOutput, WriteToLogApiError> {
-        let replica_input = replica::WriteToLogInput {
-            data: input.data,
-        };
+impl ReplicatedLog for ClientAdapter {
+    async fn start_replication(
+        &self,
+        input: StartReplicationInput,
+    ) -> Result<StartReplicationOutput, StartReplicationError> {
+        let replica_input = replica::WriteToLogInput { data: input.data };
 
-        self.actor_client.write_to_log(replica_input)
+        self.actor_client
+            .write_to_log(replica_input)
             .await
-            .map(|o| WriteToLogApiOutput {
-                applier_output: o.applier_output,
+            .map(|o| StartReplicationOutput {
+                key: EntryKey {
+                    term: o.enqueued_term,
+                    entry_index: o.enqueued_index,
+                },
             })
             .map_err(|e| match e {
-                replica::WriteToLogError::LeaderRedirect { leader_id, leader_ip, leader_port } => WriteToLogApiError::LeaderRedirect {
+                replica::WriteToLogError::LeaderRedirect {
+                    leader_id,
+                    leader_ip,
+                    leader_port,
+                } => StartReplicationError::LeaderRedirect {
                     leader_id,
                     leader_ip,
                     leader_port,
                 },
-                replica::WriteToLogError::NoLeader => WriteToLogApiError::NoLeader,
-                replica::WriteToLogError::LocalIoError(e2) => WriteToLogApiError::LocalIoError(e2),
-                replica::WriteToLogError::ReplicationError() => WriteToLogApiError::ReplicationError(),
+                replica::WriteToLogError::NoLeader => StartReplicationError::NoLeader,
+                replica::WriteToLogError::LocalIoError(e2) => StartReplicationError::LocalIoError(e2),
             })
-    }
-
-    fn local_state_machine(&self) -> &M {
-        unimplemented!()
     }
 }

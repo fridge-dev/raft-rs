@@ -12,7 +12,8 @@ pub struct WriteToLogInput {
 
 #[derive(Debug)]
 pub struct WriteToLogOutput {
-    pub applier_output: Bytes,
+    pub enqueued_term: Term,
+    pub enqueued_index: Index,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -31,10 +32,6 @@ pub enum WriteToLogError {
 
     #[error("Failed to persist log")]
     LocalIoError(io::Error),
-
-    // For unexpected failures.
-    #[error("I'm leader, but couldn't replicate data to majority. Some unexpected failure. Idk.")]
-    ReplicationError(/* TODO */),
 }
 
 #[derive(Debug)]

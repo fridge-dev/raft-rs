@@ -2,9 +2,9 @@
 //! might seem odd. But I plan to move the commitlog mod into its own crate/repo, at which point
 //! this abstraction will make more sense.
 
+use crate::api;
 use crate::commitlog::{Entry, Index, Log};
 use crate::replica::local_state::Term;
-use crate::{LocalStateMachineApplier, StateMachineOutput};
 use bytes::Bytes;
 use std::io;
 
@@ -17,44 +17,39 @@ use std::io;
 ///
 /// A log entry's state has no global truth. Each replica will have their own local view of what
 /// state the log entry is in.
-pub struct RaftLog<L, M>
+pub struct RaftLog<L>
 where
     L: Log<RaftLogEntry>,
-    M: LocalStateMachineApplier,
 {
     // This is the log that we're replicating.
     log: L,
     // Metadata about the highest log entry that we've locally written. It must be updated atomically.
     latest_entry_metadata: Option<(Term, Index)>,
 
-    // Application specific state machine, provided by library client.
-    state_machine: M,
+    // Commit stream to publish committed entries to. To be consumed by the application layer to
+    // apply committed entries to their state machine.
+    commit_stream: api::CommitStreamPublisher,
     // Index of highest log entry known to be committed.
     commit_index: Index,
     // Index of highest log entry applied to state machine.
     last_applied_index: Index,
 }
 
-impl<L, M> RaftLog<L, M>
+impl<L> RaftLog<L>
 where
     L: Log<RaftLogEntry>,
-    M: LocalStateMachineApplier,
 {
-    pub fn new(log: L, state_machine: M) -> Self {
+    pub fn new(log: L, commit_stream: api::CommitStreamPublisher) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
         assert_eq!(log.next_index(), Index::new(1));
 
         RaftLog {
             log,
             latest_entry_metadata: None,
-            state_machine,
+            commit_stream,
             commit_index: Index::new(0),
             last_applied_index: Index::new(0),
         }
-    }
-
-    pub fn state_machine(&self) -> &M {
-        &self.state_machine
     }
 
     pub fn latest_entry(&self) -> Option<(Term, Index)> {
@@ -106,10 +101,8 @@ where
     }
 
     /// try_apply_all_committed_entries applies all committed but unapplied entries in order.
-    /// It returns the output of applying the final entry.
-    pub fn try_apply_all_committed_entries(&mut self) -> Result<Option<StateMachineOutput>, io::Error> {
-        let mut last_output = None;
-
+    /// TODO:2 Make infalliable by buffering in memory all of the uncommited entries.
+    pub fn try_apply_all_committed_entries(&mut self) -> Result<(), io::Error> {
         while self.last_applied_index < self.commit_index {
             let next_index = self.last_applied_index.plus(1);
 
@@ -121,11 +114,17 @@ where
                 Err(e) => return Err(e),
             };
 
-            last_output = Some(self.state_machine.apply_committed_entry(Bytes::from(entry.data)));
+            self.commit_stream.notify_commit(api::CommittedEntry {
+                key: api::EntryKey {
+                    term: entry.term,
+                    entry_index: next_index,
+                },
+                data: Bytes::from(entry.data),
+            });
             self.last_applied_index = next_index;
         }
 
-        Ok(last_output)
+        Ok(())
     }
 }
 

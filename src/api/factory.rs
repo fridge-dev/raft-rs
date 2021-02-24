@@ -1,26 +1,23 @@
+use crate::actor;
+use crate::api::client::{create_commit_stream, ClientAdapter, CommitStream};
 use crate::commitlog::InMemoryLog;
 use crate::replica::{Cluster, Replica, ReplicaConfig, VolatileLocalState};
-use crate::{api, replica, LocalStateMachineApplier, RaftClientConfig, ReplicatedStateMachine};
+use crate::{api, replica, RaftClientConfig, ReplicatedLog};
 use std::error::Error;
 use std::io;
-use crate::api::client::ClientAdapter;
-use crate::actor;
 
-pub async fn create_raft_client<M: 'static>(
-    config: RaftClientConfig<M>,
-) -> Result<Box<dyn ReplicatedStateMachine<M>>, ClientCreationError>
-where
-    M: LocalStateMachineApplier + Send,
-{
+pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClient, ClientCreationError> {
     let log = InMemoryLog::create().map_err(|e| ClientCreationError::LogInitialization(e))?;
 
     let cluster = try_create_cluster(config.cluster_info).await?;
+
+    let (commit_stream_publisher, commit_stream) = create_commit_stream();
 
     let replica = Replica::new(ReplicaConfig {
         cluster,
         log,
         local_state: VolatileLocalState::new(),
-        state_machine: config.state_machine,
+        commit_stream_publisher,
     });
 
     let (actor_client, replica_actor) = actor::create(10, replica);
@@ -28,7 +25,16 @@ where
 
     let client = ClientAdapter { actor_client };
 
-    Ok(Box::new(client))
+    Ok(CreatedClient {
+        replication_log: Box::new(client),
+        commit_stream,
+    })
+}
+
+// Name could be better
+pub struct CreatedClient {
+    pub replication_log: Box<dyn ReplicatedLog>,
+    pub commit_stream: CommitStream,
 }
 
 #[derive(Debug, thiserror::Error)]

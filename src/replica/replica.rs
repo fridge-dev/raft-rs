@@ -1,50 +1,48 @@
+use crate::api;
 use crate::commitlog::{Index, Log};
+use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
 use crate::replica::commit_log::{RaftLog, RaftLogEntry};
 use crate::replica::election::{CurrentLeader, ElectionState};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peers::{Cluster, ReplicaId};
 use crate::replica::replica_api::{
-    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, RequestVoteError, RequestVoteInput,
-    RequestVoteOutput, TermOutOfDateInfo, WriteToLogInput, WriteToLogOutput, WriteToLogError, RequestVoteResultFromPeerInput, AppendEntriesResultFromPeerInput,
+    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesResultFromPeerInput, RequestVoteError,
+    RequestVoteInput, RequestVoteOutput, RequestVoteResultFromPeerInput, TermOutOfDateInfo, WriteToLogError,
+    WriteToLogInput, WriteToLogOutput,
 };
-use crate::{LocalStateMachineApplier, StateMachineOutput};
 use bytes::Bytes;
 use std::cmp;
-use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
 
-pub struct ReplicaConfig<L, S, M>
+pub struct ReplicaConfig<L, S>
 where
     L: Log<RaftLogEntry>,
     S: PersistentLocalState,
-    M: LocalStateMachineApplier,
 {
     pub cluster: Cluster,
     pub log: L,
     pub local_state: S,
-    pub state_machine: M,
+    pub commit_stream_publisher: api::CommitStreamPublisher,
 }
 
-pub struct Replica<L, S, M>
+pub struct Replica<L, S>
 where
     L: Log<RaftLogEntry>,
     S: PersistentLocalState,
-    M: LocalStateMachineApplier,
 {
     my_replica_id: ReplicaId,
     cluster_members: Cluster,
     local_state: S,
     election_state: ElectionState,
-    commit_log: RaftLog<L, M>,
+    commit_log: RaftLog<L>,
 }
 
-impl<L, S, M> Replica<L, S, M>
+impl<L, S> Replica<L, S>
 where
     L: Log<RaftLogEntry>,
     S: PersistentLocalState,
-    M: LocalStateMachineApplier,
 {
-    pub fn new(config: ReplicaConfig<L, S, M>) -> Self {
-        let commit_log = RaftLog::new(config.log, config.state_machine);
+    pub fn new(config: ReplicaConfig<L, S>) -> Self {
+        let commit_log = RaftLog::new(config.log, config.commit_stream_publisher);
         let my_replica_id = config.cluster.my_replica_id().clone();
         Replica {
             my_replica_id,
@@ -90,22 +88,18 @@ where
             .append(new_entry)
             .map_err(|e| WriteToLogError::LocalIoError(e))?;
 
-        self.replicate_new_entry(appended_index, term, input.data.clone());
+        Ok(WriteToLogOutput {
+            enqueued_term: term,
+            enqueued_index: appended_index,
+        })
 
-        self.commit_log.ratchet_fwd_commit_index(appended_index);
-        let state_machine_output = self
-            .commit_log
-            .try_apply_all_committed_entries()
-            .map_err(|e| WriteToLogError::LocalIoError(e))?
-            // This should not happen, and indicates some erroneous state on the server.
-            .expect("Incremented commit index but then there was no corresponding entry to apply.");
-
-        let applier_output = match state_machine_output {
-            StateMachineOutput::Data(outcome) => outcome,
-            StateMachineOutput::NoData => Bytes::new(),
-        };
-
-        Ok(WriteToLogOutput { applier_output })
+        // self.replicate_new_entry(appended_index, term, input.data.clone());
+        //
+        // self.commit_log.ratchet_fwd_commit_index(appended_index);
+        // self
+        //     .commit_log
+        //     .try_apply_all_committed_entries()
+        //     .map_err(|e| WriteToLogError::LocalIoError(e))?;
     }
 
     fn replicate_new_entry(&mut self, _entry_index: Index, entry_term: Term, entry_data: Bytes) {
@@ -126,7 +120,7 @@ where
                 new_entries: vec![ProtoLogEntry {
                     term: entry_term.into_inner(),
                     data: entry_data.to_vec(),
-                }]
+                }],
             };
             let _unpolled_future = peer.client.append_entries(req);
         }
@@ -209,7 +203,10 @@ where
         unimplemented!()
     }
 
-    pub fn handle_append_entries(&mut self, input: AppendEntriesInput) -> Result<AppendEntriesOutput, AppendEntriesError> {
+    pub fn handle_append_entries(
+        &mut self,
+        input: AppendEntriesInput,
+    ) -> Result<AppendEntriesOutput, AppendEntriesError> {
         // 0. Ensure candidate is known member.
         if !self.cluster_members.contains_member(&input.leader_id) {
             return Err(AppendEntriesError::ClientNotInCluster);
@@ -320,10 +317,6 @@ where
 
     pub fn follower_timeout(&mut self) {
         unimplemented!()
-    }
-
-    pub fn local_state_machine(&self) -> &M {
-        self.commit_log.state_machine()
     }
 
     // > Raft determines which of two logs is more up-to-date

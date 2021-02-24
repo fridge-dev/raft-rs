@@ -1,14 +1,10 @@
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use raft;
-use std::collections::HashMap;
-use std::error::Error;
 use std::net::Ipv4Addr;
 use tokio;
 
 #[tokio::main]
 async fn main() {
     let cluster = fake_cluster();
-    let mut server = AccumulatorServer::setup(cluster).await.expect("WTF");
+    let mut server = accumulator_impl::Accumulator::setup(cluster).await.expect("WTF");
 
     assert_eq!(100, server.add("k1".into(), 100).await.unwrap());
     assert_eq!(100, server.add("k2".into(), 100).await.unwrap());
@@ -53,92 +49,91 @@ fn fake_cluster() -> raft::ClusterInfo {
     }
 }
 
-#[derive(Default)]
-pub struct AccumulatorStateMachine {
-    count_per_key: HashMap<String, i64>,
-}
+mod accumulator_impl {
+    use bytes::{Buf, BufMut, Bytes, BytesMut};
+    use std::collections::HashMap;
+    use std::error::Error;
 
-impl AccumulatorStateMachine {
-    pub fn add(&mut self, key: String, value: i64) -> i64 {
-        let mut new_value = value;
-        if let Some(existing_value) = self.count_per_key.get(&key) {
-            new_value += existing_value;
+    pub struct Accumulator {
+        replicated_log: Box<dyn raft::ReplicatedLog>,
+        commit_stream: raft::CommitStream,
+        state_machine: AccumulatorStateMachine,
+    }
+
+    impl Accumulator {
+        pub async fn setup(cluster_info: raft::ClusterInfo) -> Result<Self, Box<dyn Error>> {
+            let client = raft::create_raft_client(raft::RaftClientConfig {
+                log_directory: "/raft/".to_string(),
+                cluster_info,
+            })
+            .await?;
+
+            Ok(Accumulator {
+                replicated_log: client.replication_log,
+                commit_stream: client.commit_stream,
+                state_machine: AccumulatorStateMachine::default(),
+            })
         }
 
-        self.count_per_key.insert(key, new_value);
+        pub async fn add(&mut self, key: String, value: i64) -> Result<i64, Box<dyn Error>> {
+            // Phase 1 - enqueue for repl
+            let data = encode_kv(key, value);
+            let start_repl_input = raft::StartReplicationInput { data };
+            let start_repl_output = self.replicated_log.start_replication(start_repl_input).await?;
 
-        new_value
+            // Phase 2 - wait for commit and validate
+            let committed_entry = self.commit_stream.next().await;
+            assert_eq!(start_repl_output.key, committed_entry.key);
+            let (key, value) = decode_kv(committed_entry.data);
+
+            // Apply to state machine
+            let applied_output = self.state_machine.add(key, value);
+            Ok(applied_output)
+        }
+
+        pub fn get(&self, key: &str) -> i64 {
+            self.state_machine.read(key)
+        }
     }
 
-    pub fn read(&self, key: &str) -> i64 {
-        *self.count_per_key.get(key).unwrap_or(&0)
-    }
-}
+    // Ideally this conversion should be represented in the lib's API?
+    /// encode the key/value pair in the following way:
+    /// | 8 bytes | variable length |
+    /// |  value  |   key           |
+    fn encode_kv(key: String, value: i64) -> Bytes {
+        let mut bytes = BytesMut::with_capacity(8 + key.len());
+        bytes.put_i64(value);
+        bytes.put_slice(key.as_bytes());
 
-impl raft::LocalStateMachineApplier for AccumulatorStateMachine {
-    fn apply_committed_entry(&mut self, bytes: Bytes) -> raft::StateMachineOutput {
-        let (key, value) = decode_kv(bytes);
-
-        let new_value = self.add(key, value);
-
-        raft::StateMachineOutput::Data(encode_v(new_value))
-    }
-}
-
-pub struct AccumulatorServer {
-    raft: Box<dyn raft::ReplicatedStateMachine<AccumulatorStateMachine>>,
-}
-
-impl AccumulatorServer {
-    pub async fn setup(cluster_info: raft::ClusterInfo) -> Result<Self, Box<dyn Error>> {
-        let raft = raft::create_raft_client(raft::RaftClientConfig {
-            state_machine: AccumulatorStateMachine::default(),
-            log_directory: "/raft/".to_string(),
-            cluster_info,
-        })
-        .await?;
-
-        Ok(AccumulatorServer { raft })
+        bytes.freeze()
     }
 
-    pub async fn add(&mut self, key: String, value: i64) -> Result<i64, Box<dyn Error>> {
-        let data = encode_kv(key, value);
-        let input = raft::WriteToLogApiInput { data };
-        let output = self.raft.execute(input).await?;
-        Ok(decode_v(output.applier_output))
+    fn decode_kv(mut bytes: Bytes) -> (String, i64) {
+        let value = bytes.get_i64();
+        let key = String::from_utf8_lossy(&bytes);
+
+        (key.into_owned(), value)
     }
 
-    pub fn get(&self, key: &str) -> i64 {
-        self.raft.local_state_machine().read(key)
+    #[derive(Default)]
+    struct AccumulatorStateMachine {
+        count_per_key: HashMap<String, i64>,
     }
-}
 
-// Ideally this conversion should be represented in the lib's API?
-/// encode the key/value pair in the following way:
-/// | 8 bytes | variable length |
-/// |  value  |   key           |
-fn encode_kv(key: String, value: i64) -> Bytes {
-    let mut bytes = BytesMut::with_capacity(8 + key.len());
-    bytes.put_i64(value);
-    bytes.put_slice(key.as_bytes());
+    impl AccumulatorStateMachine {
+        pub fn add(&mut self, key: String, value: i64) -> i64 {
+            let mut new_value = value;
+            if let Some(existing_value) = self.count_per_key.get(&key) {
+                new_value += existing_value;
+            }
 
-    bytes.freeze()
-}
+            self.count_per_key.insert(key, new_value);
 
-fn decode_kv(mut bytes: Bytes) -> (String, i64) {
-    let value = bytes.get_i64();
-    let key = String::from_utf8_lossy(&bytes);
+            new_value
+        }
 
-    (key.into_owned(), value)
-}
-
-fn encode_v(value: i64) -> Bytes {
-    let mut bytes = BytesMut::with_capacity(8);
-    bytes.put_i64(value);
-
-    bytes.freeze()
-}
-
-fn decode_v(mut bytes: Bytes) -> i64 {
-    bytes.get_i64()
+        pub fn read(&self, key: &str) -> i64 {
+            *self.count_per_key.get(key).unwrap_or(&0)
+        }
+    }
 }

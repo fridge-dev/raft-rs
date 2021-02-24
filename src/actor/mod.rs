@@ -1,23 +1,17 @@
-use tokio::sync::{mpsc, oneshot};
-use crate::replica::{Replica, RaftLogEntry, PersistentLocalState};
-use crate::commitlog::Log;
-use crate::{LocalStateMachineApplier, replica};
-use std::fmt::Debug;
+use crate::commitlog;
+use crate::replica;
 use std::error::Error;
+use std::fmt::Debug;
+use tokio::sync::{mpsc, oneshot};
 
-pub fn create<L, S, M>(buffer_size: usize, replica: Replica<L, S, M>) -> (ActorClient, ReplicaActor<L, S, M>) where
-    L: Log<RaftLogEntry>,
-    S: PersistentLocalState,
-    M: LocalStateMachineApplier,
+pub fn create<L, S>(buffer_size: usize, replica: replica::Replica<L, S>) -> (ActorClient, ReplicaActor<L, S>)
+where
+    L: commitlog::Log<replica::RaftLogEntry>,
+    S: replica::PersistentLocalState,
 {
     let (tx, rx) = mpsc::channel(buffer_size);
-    let client = ActorClient {
-        sender: tx,
-    };
-    let handler = ReplicaActor {
-        receiver: rx,
-        replica,
-    };
+    let client = ActorClient { sender: tx };
+    let handler = ReplicaActor { receiver: rx, replica };
 
     (client, handler)
 }
@@ -33,12 +27,18 @@ enum Event {
     // Leader: Write to disk, locally buffer entry to be replicated later. Also stores callback.
     // Candidate: Reject request.
     // Follower: Redirect.
-    WriteToLog(replica::WriteToLogInput, Callback<replica::WriteToLogOutput, replica::WriteToLogError>),
+    WriteToLog(
+        replica::WriteToLogInput,
+        Callback<replica::WriteToLogOutput, replica::WriteToLogError>,
+    ),
 
     // Leader: Grant vote if applicable (includes write to disk). Transition to follower.
     // Candidate: Grant vote if applicable (includes write to disk). Transition to follower.
     // Follower: Grant vote if applicable (includes write to disk).
-    RequestVote(replica::RequestVoteInput, Callback<replica::RequestVoteOutput, replica::RequestVoteError>),
+    RequestVote(
+        replica::RequestVoteInput,
+        Callback<replica::RequestVoteOutput, replica::RequestVoteError>,
+    ),
 
     // Leader: discard
     // Candidate: Update local state. Transition to leader if quorum vote.
@@ -48,7 +48,10 @@ enum Event {
     // Leader: Transition to follower if applicable. Clean up log. Respond to request.
     // Candidate: Transition to follower if applicable. Clean up log. Respond to request.
     // Follower: Write to disk then respond. Reset timeout.
-    AppendEntries(replica::AppendEntriesInput, Callback<replica::AppendEntriesOutput, replica::AppendEntriesError>),
+    AppendEntries(
+        replica::AppendEntriesInput,
+        Callback<replica::AppendEntriesOutput, replica::AppendEntriesError>,
+    ),
 
     // Leader: Update local state tracking each entry's replication progress. If committed, apply to state machine and send response to WTL client.
     // Candidate: discard
@@ -61,12 +64,12 @@ enum Event {
     // Leader: Call AppendEntries on all peers with all local un-replicated entries. Initialize local state tracking each entry's replication progress.
     // Candidate: NOT POSSIBLE - discard
     // Follower: NOT POSSIBLE - discard
-    LeaderTimer /* Payload? */,
+    LeaderTimer, /* Payload? */
 
     // Leader: NOT POSSIBLE - discard
     // Candidate: Transition to candidate. Trigger new election.
     // Follower: Transition to candidate. Trigger new election.
-    FollowerTimeout /* Payload? */,
+    FollowerTimeout, /* Payload? */
 }
 
 #[derive(Debug)]
@@ -80,33 +83,45 @@ impl<O: Debug, E: Error> Callback<O, E> {
 
 pub struct ActorClient {
     // When to use try_send vs send? Do all calls have same criticality?
-    sender: mpsc::Sender<Event>
+    sender: mpsc::Sender<Event>,
 }
 
 impl ActorClient {
-    pub async fn write_to_log(&self, input: replica::WriteToLogInput) -> Result<replica::WriteToLogOutput, replica::WriteToLogError> {
+    pub async fn write_to_log(
+        &self,
+        input: replica::WriteToLogInput,
+    ) -> Result<replica::WriteToLogOutput, replica::WriteToLogError> {
         let (tx, rx) = oneshot::channel();
         self.send(Event::WriteToLog(input, Callback(tx))).await;
 
-        rx.await.expect("Raft replica event loop actor dropped our channel. WTF!")
+        rx.await
+            .expect("Raft replica event loop actor dropped our channel. WTF!")
     }
 
-    pub async fn request_vote(&self, input: replica::RequestVoteInput) -> Result<replica::RequestVoteOutput, replica::RequestVoteError> {
+    pub async fn request_vote(
+        &self,
+        input: replica::RequestVoteInput,
+    ) -> Result<replica::RequestVoteOutput, replica::RequestVoteError> {
         let (tx, rx) = oneshot::channel();
         self.send(Event::RequestVote(input, Callback(tx))).await;
 
-        rx.await.expect("Raft replica event loop actor dropped our channel. WTF!")
+        rx.await
+            .expect("Raft replica event loop actor dropped our channel. WTF!")
     }
 
     pub async fn request_vote_result_from_peer(&self, input: replica::RequestVoteResultFromPeerInput) {
         self.send(Event::RequestVoteResultFromPeer(input)).await;
     }
 
-    pub async fn append_entries(&self, input: replica::AppendEntriesInput) -> Result<replica::AppendEntriesOutput, replica::AppendEntriesError> {
+    pub async fn append_entries(
+        &self,
+        input: replica::AppendEntriesInput,
+    ) -> Result<replica::AppendEntriesOutput, replica::AppendEntriesError> {
         let (tx, rx) = oneshot::channel();
         self.send(Event::AppendEntries(input, Callback(tx))).await;
 
-        rx.await.expect("Raft replica event loop actor dropped our channel. WTF!")
+        rx.await
+            .expect("Raft replica event loop actor dropped our channel. WTF!")
     }
 
     pub async fn append_entries_result_from_peer(&self, input: replica::AppendEntriesResultFromPeerInput) {
@@ -122,26 +137,27 @@ impl ActorClient {
     }
 
     async fn send(&self, event: Event) {
-        self.sender.send(event).await.expect("Raft replica event loop actor is dead. WTF!!");
+        self.sender
+            .send(event)
+            .await
+            .expect("Raft replica event loop actor is dead. WTF!!");
     }
 }
 
 /// ReplicaActor is replica logic in actor model.
-pub struct ReplicaActor<L, S, M>
-    where
-        L: Log<RaftLogEntry>,
-        S: PersistentLocalState,
-        M: LocalStateMachineApplier,
+pub struct ReplicaActor<L, S>
+where
+    L: commitlog::Log<replica::RaftLogEntry>,
+    S: replica::PersistentLocalState,
 {
     receiver: mpsc::Receiver<Event>,
-    replica: Replica<L, S, M>,
+    replica: replica::Replica<L, S>,
 }
 
-impl<L, S, M> ReplicaActor<L, S, M>
-    where
-        L: Log<RaftLogEntry>,
-        S: PersistentLocalState,
-        M: LocalStateMachineApplier,
+impl<L, S> ReplicaActor<L, S>
+where
+    L: commitlog::Log<replica::RaftLogEntry>,
+    S: replica::PersistentLocalState,
 {
     pub async fn run_event_loop(mut self) {
         while let Some(event) = self.receiver.recv().await {

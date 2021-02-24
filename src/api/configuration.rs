@@ -1,13 +1,8 @@
 //! This mod is responsible for configuring and creating an instance of `RaftClientApi` for application to use.
 
-use crate::api::state_machine::LocalStateMachineApplier;
 use std::net::Ipv4Addr;
 
-pub struct RaftClientConfig<M>
-where
-    M: LocalStateMachineApplier,
-{
-    pub state_machine: M,
+pub struct RaftClientConfig {
     // A directory where we can create files and sub-directories.
     pub log_directory: String,
     pub cluster_info: ClusterInfo,

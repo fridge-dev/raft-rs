@@ -131,3 +131,5 @@ pub use peers::ReplicaMetadata;
 pub use replica::Replica;
 pub use replica::ReplicaConfig;
 pub use replica_api::*;
+
+pub(crate) use local_state::Term;

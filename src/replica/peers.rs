@@ -1,9 +1,9 @@
 use crate::replica::peer_client::RaftClient;
+use std::collections::hash_map::ValuesMut;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::Ipv4Addr;
 use tonic::codegen::http::uri;
-use std::collections::hash_map::ValuesMut;
 
 /// ReplicaId is kind of like NodeId or ServerId. It is the ID of the entity participating in the
 /// replication cluster.
