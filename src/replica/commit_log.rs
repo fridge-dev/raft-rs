@@ -19,7 +19,7 @@ use std::io;
 /// state the log entry is in.
 pub struct RaftLog<L>
 where
-    L: Log<RaftLogEntry>,
+    L: Log<RaftCommitLogEntry>,
 {
     // This is the log that we're replicating.
     log: L,
@@ -37,7 +37,7 @@ where
 
 impl<L> RaftLog<L>
 where
-    L: Log<RaftLogEntry>,
+    L: Log<RaftCommitLogEntry>,
 {
     pub fn new(log: L, commit_stream: api::CommitStreamPublisher) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
@@ -56,7 +56,7 @@ where
         self.latest_entry_metadata
     }
 
-    pub fn read(&self, index: Index) -> Result<Option<RaftLogEntry>, io::Error> {
+    pub fn read(&self, index: Index) -> Result<Option<RaftCommitLogEntry>, io::Error> {
         self.log.read(index)
     }
 
@@ -76,7 +76,7 @@ where
         Ok(())
     }
 
-    pub fn append(&mut self, entry: RaftLogEntry) -> Result<Index, io::Error> {
+    pub fn append(&mut self, entry: RaftCommitLogEntry) -> Result<Index, io::Error> {
         let appended_term = entry.term;
         let appended_index = self.log.append(entry)?;
         // Only update state after log action completes.
@@ -100,9 +100,18 @@ where
         self.commit_index = new_commit_index;
     }
 
-    /// try_apply_all_committed_entries applies all committed but unapplied entries in order.
-    /// TODO:2 Make infalliable by buffering in memory all of the uncommited entries.
-    pub fn try_apply_all_committed_entries(&mut self) -> Result<(), io::Error> {
+    /// apply_all_committed_entries applies all committed but unapplied entries in order.
+    pub fn apply_all_committed_entries(&mut self) {
+        // TODO:2 Make infalliable by buffering in memory all of the uncommited entries.
+        if let Err(e) = self.try_apply_all_committed_entries() {
+            // We've already persisted the log. Applying committed logs is not on critical
+            // path. We can wait to retry next time.
+            // TODO:5 add logging/metrics. This is a dropped error.
+            println!("Failed to apply a log entry. {:?}", e)
+        }
+    }
+
+    fn try_apply_all_committed_entries(&mut self) -> Result<(), io::Error> {
         while self.last_applied_index < self.commit_index {
             let next_index = self.last_applied_index.plus(1);
 
@@ -150,16 +159,16 @@ where
 ///
 /// TODO:1.5 is this struct needed as `pub`? I think we can expose these params separately to caller.
 #[derive(Clone)]
-pub struct RaftLogEntry {
+pub struct RaftCommitLogEntry {
     pub term: Term,
     pub data: Vec<u8>,
 }
 
 const RAFT_LOG_ENTRY_FORMAT_VERSION: u8 = 1;
 
-impl Entry for RaftLogEntry {}
+impl Entry for RaftCommitLogEntry {}
 
-impl From<Vec<u8>> for RaftLogEntry {
+impl From<Vec<u8>> for RaftCommitLogEntry {
     fn from(bytes: Vec<u8>) -> Self {
         // TODO:1 research how to do this correctly, safely, and efficiently.
         // TODO:2 use TryFrom so we can return error
@@ -176,14 +185,14 @@ impl From<Vec<u8>> for RaftLogEntry {
             | (bytes[8] as u64) << 7 * 8;
         let mut data: Vec<u8> = Vec::with_capacity(bytes.len() - 8);
         data.clone_from_slice(&bytes[8..]);
-        RaftLogEntry {
+        RaftCommitLogEntry {
             term: Term::new(term),
             data,
         }
     }
 }
 
-impl Into<Vec<u8>> for RaftLogEntry {
+impl Into<Vec<u8>> for RaftCommitLogEntry {
     fn into(self) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::with_capacity(1 + 8 + self.data.len());
 

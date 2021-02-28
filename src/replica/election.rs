@@ -1,26 +1,39 @@
+use crate::actor;
 use crate::commitlog::Index;
 use crate::replica::peers::ReplicaId;
-use std::collections::HashMap;
+use crate::replica::timers::{FollowerTimerHandle, LeaderTimerHandle};
+use std::collections::{HashMap, HashSet};
+use tokio::time::Duration;
+
+#[derive(Copy, Clone)]
+pub struct ElectionConfig {
+    pub leader_heartbeat_duration: Duration,
+    pub follower_min_timeout: Duration,
+    pub follower_max_timeout: Duration,
+}
 
 pub struct ElectionState {
-    // Invariant: `state: Option<>` is always `Some` at beginning and end of method.
-    state: Option<State>,
+    state: State,
+    config: ElectionConfig,
+    actor_client: actor::ActorClient,
 }
 
 impl ElectionState {
     /// `new_follower()` creates a new ElectionState instance that starts out as a follower.
-    pub fn new_follower() -> Self {
+    pub fn new_follower(config: ElectionConfig, actor_client: actor::ActorClient) -> Self {
         ElectionState {
-            state: Some(State::Follower(FollowerState::new())),
+            state: State::Follower(FollowerState::new(
+                config.follower_min_timeout,
+                config.follower_max_timeout,
+                actor_client.clone(),
+            )),
+            config,
+            actor_client,
         }
     }
 
     pub fn current_leader(&self) -> CurrentLeader {
-        let state = self
-            .state
-            .as_ref()
-            .expect("Illegal state: ElectionStateManager has None inner state.");
-        match state {
+        match &self.state {
             State::Leader(_) => CurrentLeader::Me,
             State::Candidate(_) => CurrentLeader::Unknown,
             State::Follower(FollowerState { leader_id: None, .. }) => CurrentLeader::Unknown,
@@ -31,22 +44,44 @@ impl ElectionState {
         }
     }
 
-    pub fn transition_to_follower(&mut self, new_leader_id: Option<ReplicaId>) {
-        self.do_transition(|state| state.into_follower(new_leader_id));
+    pub fn reset_timeout_if_follower(&self) {
+        if let State::Follower(fs) = &self.state {
+            fs.reset_timeout();
+        }
     }
 
-    fn do_transition<F>(&mut self, transition: F)
-    where
-        F: FnOnce(State) -> State,
-    {
-        let mut state = self
-            .state
-            .take()
-            .expect("Illegal state: ElectionStateManager has None inner state.");
+    /// `add_received_vote()` returns the number of unique votes we've received after adding the
+    /// provided `vote_from`
+    pub fn add_received_vote_if_candidate(&mut self, vote_from: ReplicaId) -> usize {
+        if let State::Candidate(cs) = &mut self.state {
+            cs.add_received_vote(vote_from)
+        } else {
+            0
+        }
+    }
 
-        state = transition(state);
+    pub fn transition_to_candidate(&mut self) {
+        self.state = State::Candidate(CandidateState::new(
+            self.config.follower_min_timeout,
+            self.config.follower_max_timeout,
+            self.actor_client.clone(),
+        ));
+    }
 
-        self.state.replace(state);
+    pub fn transition_to_leader(&mut self) {
+        self.state = State::Leader(LeaderState::new(
+            self.config.leader_heartbeat_duration,
+            self.actor_client.clone(),
+        ))
+    }
+
+    pub fn transition_to_follower(&mut self, new_leader_id: Option<ReplicaId>) {
+        self.state = State::Follower(FollowerState::with_leader_info(
+            new_leader_id,
+            self.config.follower_min_timeout,
+            self.config.follower_max_timeout,
+            self.actor_client.clone(),
+        ));
     }
 }
 
@@ -62,24 +97,93 @@ enum State {
     Follower(FollowerState),
 }
 
-impl State {
-    pub fn into_follower(self, new_leader_id: Option<ReplicaId>) -> Self {
-        match self {
-            // TODO:3 consider making a trait like below as an experiment in readability.
-            //        `IntoFollower { fn into_follower(self, ...) -> FollowerState }`
-            //        Or consider changing `ElectionState.transition_to_follower` to directly
-            //        create follower state :P
-            State::Leader(leader) => State::Follower(leader.into_follower(new_leader_id)),
-            State::Candidate(candidate) => State::Follower(candidate.into_follower(new_leader_id)),
-            State::Follower(follower) => State::Follower(follower.into_follower(new_leader_id)),
+struct LeaderState {
+    peer_state: HashMap<ReplicaId, LeaderServerView>,
+    heartbeat_timer: LeaderTimerHandle,
+}
+
+struct CandidateState {
+    received_votes_from: HashSet<ReplicaId>,
+    follower_timeout_tracker: FollowerTimerHandle,
+}
+
+struct FollowerState {
+    leader_id: Option<ReplicaId>,
+    follower_timeout_tracker: FollowerTimerHandle,
+}
+
+impl LeaderState {
+    pub fn new(
+        /* TODO:1.5 peers should be listed here */
+        heartbeat_duration: Duration,
+        actor_client: actor::ActorClient,
+    ) -> Self {
+        LeaderState {
+            peer_state: HashMap::new(),
+            heartbeat_timer: LeaderTimerHandle::spawn_background_task(heartbeat_duration, actor_client),
         }
     }
 }
 
-struct LeaderState {
-    peer_state: HashMap<ReplicaId, LeaderServerView>,
+impl CandidateState {
+    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::ActorClient) -> Self {
+        CandidateState {
+            // with_capacity(3)? CmonBruh, you can't assume that.
+            // Well... Because of jittered follower timeout, most of the time if a follower
+            // transitions to candidate, they'll also transition to leader. And most of the time, I
+            // will run this as a cluster of 5, so we only need 3. If we run cluster at different
+            // size, this won't matter hardly at all.
+            received_votes_from: HashSet::with_capacity(3),
+            follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
+                min_timeout,
+                max_timeout,
+                actor_client,
+            ),
+        }
+    }
+
+    /// `add_received_vote()` returns the number of unique votes we've received after adding the
+    /// provided `vote_from`
+    pub fn add_received_vote(&mut self, vote_from: ReplicaId) -> usize {
+        self.received_votes_from.insert(vote_from);
+        self.received_votes_from.len()
+    }
 }
 
+impl FollowerState {
+    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::ActorClient) -> Self {
+        FollowerState {
+            leader_id: None,
+            follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
+                min_timeout,
+                max_timeout,
+                actor_client,
+            ),
+        }
+    }
+
+    pub fn with_leader_info(
+        leader_id: Option<ReplicaId>,
+        min_timeout: Duration,
+        max_timeout: Duration,
+        actor_client: actor::ActorClient,
+    ) -> Self {
+        FollowerState {
+            leader_id,
+            follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
+                min_timeout,
+                max_timeout,
+                actor_client,
+            ),
+        }
+    }
+
+    pub fn reset_timeout(&self) {
+        self.follower_timeout_tracker.reset_timeout();
+    }
+}
+
+// Consider separate mod for leader state tracking, if it's more involved.
 struct LeaderServerView {
     next: Index,
     matched: Index,
@@ -91,54 +195,5 @@ impl LeaderServerView {
             next: Index::new(0),
             matched: Index::new(0),
         }
-    }
-}
-
-impl LeaderState {
-    pub fn new(/* TODO:1.5 peers should be listed here*/) -> Self {
-        LeaderState {
-            peer_state: HashMap::new(),
-        }
-    }
-
-    pub fn into_follower(self, new_leader_id: Option<ReplicaId>) -> FollowerState {
-        FollowerState::with_leader_info(new_leader_id)
-    }
-}
-
-struct CandidateState {}
-
-impl CandidateState {
-    pub fn into_leader(self) -> LeaderState {
-        LeaderState::new()
-    }
-
-    pub fn into_follower(self, new_leader_id: Option<ReplicaId>) -> FollowerState {
-        FollowerState::with_leader_info(new_leader_id)
-    }
-
-    // into_candidate? split vote?
-}
-
-struct FollowerState {
-    // TODO:2.5 change to have Optional<(ReplicaId, IpAddr)>
-    leader_id: Option<ReplicaId>,
-}
-
-impl FollowerState {
-    pub fn new() -> Self {
-        FollowerState { leader_id: None }
-    }
-
-    pub fn with_leader_info(leader_id: Option<ReplicaId>) -> Self {
-        FollowerState { leader_id }
-    }
-
-    pub fn into_follower(self, new_leader_id: Option<ReplicaId>) -> FollowerState {
-        Self::with_leader_info(new_leader_id)
-    }
-
-    pub fn into_candidate(self) -> CandidateState {
-        CandidateState {}
     }
 }

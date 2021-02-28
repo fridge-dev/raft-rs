@@ -6,18 +6,18 @@ use std::io;
 use std::net::Ipv4Addr;
 
 #[derive(Debug)]
-pub struct WriteToLogInput {
+pub struct EnqueueForReplicationInput {
     pub data: Bytes,
 }
 
 #[derive(Debug)]
-pub struct WriteToLogOutput {
+pub struct EnqueueForReplicationOutput {
     pub enqueued_term: Term,
     pub enqueued_index: Index,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum WriteToLogError {
+pub enum EnqueueForReplicationError {
     #[error("I'm not leader")]
     LeaderRedirect {
         leader_id: String,
@@ -60,15 +60,14 @@ pub struct AppendEntriesInput {
     pub leader_term: Term,
     pub leader_id: ReplicaId,
     pub leader_commit_index: Index,
-    pub new_entries: Vec<ReplicatedLogEntry>,
+    pub new_entries: Vec<AppendEntriesLogEntry>,
     // > index of log entry immediately preceding new ones
     pub leader_previous_log_entry_index: Index, // TODO:2 this is type from commitlog crate. Bad abstraction.
     pub leader_previous_log_entry_term: Term,
 }
 
-// TODO:3 name is weird, make it better
 #[derive(Debug)]
-pub struct ReplicatedLogEntry {
+pub struct AppendEntriesLogEntry {
     pub term: Term,
     pub data: Bytes,
 }

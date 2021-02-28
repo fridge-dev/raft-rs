@@ -53,6 +53,7 @@ mod accumulator_impl {
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use std::collections::HashMap;
     use std::error::Error;
+    use tokio::time::Duration;
 
     pub struct Accumulator {
         replicated_log: Box<dyn raft::ReplicatedLog>,
@@ -65,6 +66,9 @@ mod accumulator_impl {
             let client = raft::create_raft_client(raft::RaftClientConfig {
                 log_directory: "/raft/".to_string(),
                 cluster_info,
+                leader_heartbeat_duration: Duration::from_millis(100),
+                follower_min_timeout: Duration::from_millis(500),
+                follower_max_timeout: Duration::from_millis(1500),
             })
             .await?;
 

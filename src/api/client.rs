@@ -106,7 +106,7 @@ impl ReplicatedLog for ClientAdapter {
         &self,
         input: StartReplicationInput,
     ) -> Result<StartReplicationOutput, StartReplicationError> {
-        let replica_input = replica::WriteToLogInput { data: input.data };
+        let replica_input = replica::EnqueueForReplicationInput { data: input.data };
 
         self.actor_client
             .write_to_log(replica_input)
@@ -118,7 +118,7 @@ impl ReplicatedLog for ClientAdapter {
                 },
             })
             .map_err(|e| match e {
-                replica::WriteToLogError::LeaderRedirect {
+                replica::EnqueueForReplicationError::LeaderRedirect {
                     leader_id,
                     leader_ip,
                     leader_port,
@@ -127,8 +127,8 @@ impl ReplicatedLog for ClientAdapter {
                     leader_ip,
                     leader_port,
                 },
-                replica::WriteToLogError::NoLeader => StartReplicationError::NoLeader,
-                replica::WriteToLogError::LocalIoError(e2) => StartReplicationError::LocalIoError(e2),
+                replica::EnqueueForReplicationError::NoLeader => StartReplicationError::NoLeader,
+                replica::EnqueueForReplicationError::LocalIoError(e2) => StartReplicationError::LocalIoError(e2),
             })
     }
 }

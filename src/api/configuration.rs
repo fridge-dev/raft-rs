@@ -1,11 +1,16 @@
 //! This mod is responsible for configuring and creating an instance of `RaftClientApi` for application to use.
 
 use std::net::Ipv4Addr;
+use tokio::time::Duration;
 
 pub struct RaftClientConfig {
     // A directory where we can create files and sub-directories.
     pub log_directory: String,
     pub cluster_info: ClusterInfo,
+    // TODO:1 make optional?
+    pub leader_heartbeat_duration: Duration,
+    pub follower_min_timeout: Duration,
+    pub follower_max_timeout: Duration,
 }
 
 pub struct ClusterInfo {

@@ -1,32 +1,38 @@
+use crate::actor::ActorClient;
 use crate::api;
 use crate::commitlog::{Index, Log};
 use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
-use crate::replica::commit_log::{RaftLog, RaftLogEntry};
-use crate::replica::election::{CurrentLeader, ElectionState};
+use crate::replica::commit_log::{RaftCommitLogEntry, RaftLog};
+use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peers::{Cluster, ReplicaId};
 use crate::replica::replica_api::{
-    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesResultFromPeerInput, RequestVoteError,
-    RequestVoteInput, RequestVoteOutput, RequestVoteResultFromPeerInput, TermOutOfDateInfo, WriteToLogError,
-    WriteToLogInput, WriteToLogOutput,
+    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesResultFromPeerInput,
+    EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, RequestVoteError,
+    RequestVoteInput, RequestVoteOutput, RequestVoteResultFromPeerInput, TermOutOfDateInfo,
 };
 use bytes::Bytes;
 use std::cmp;
+use tokio::time::Duration;
 
 pub struct ReplicaConfig<L, S>
 where
-    L: Log<RaftLogEntry>,
+    L: Log<RaftCommitLogEntry>,
     S: PersistentLocalState,
 {
     pub cluster: Cluster,
     pub log: L,
     pub local_state: S,
     pub commit_stream_publisher: api::CommitStreamPublisher,
+    pub actor_client: ActorClient,
+    pub leader_heartbeat_duration: Duration,
+    pub follower_min_timeout: Duration,
+    pub follower_max_timeout: Duration,
 }
 
 pub struct Replica<L, S>
 where
-    L: Log<RaftLogEntry>,
+    L: Log<RaftCommitLogEntry>,
     S: PersistentLocalState,
 {
     my_replica_id: ReplicaId,
@@ -34,32 +40,46 @@ where
     local_state: S,
     election_state: ElectionState,
     commit_log: RaftLog<L>,
+    actor_client: ActorClient,
 }
 
 impl<L, S> Replica<L, S>
 where
-    L: Log<RaftLogEntry>,
+    L: Log<RaftCommitLogEntry>,
     S: PersistentLocalState,
 {
     pub fn new(config: ReplicaConfig<L, S>) -> Self {
-        let commit_log = RaftLog::new(config.log, config.commit_stream_publisher);
         let my_replica_id = config.cluster.my_replica_id().clone();
+        let election_state = ElectionState::new_follower(
+            ElectionConfig {
+                leader_heartbeat_duration: config.leader_heartbeat_duration,
+                follower_min_timeout: config.follower_min_timeout,
+                follower_max_timeout: config.follower_max_timeout,
+            },
+            config.actor_client.clone(),
+        );
+        let commit_log = RaftLog::new(config.log, config.commit_stream_publisher);
+
         Replica {
             my_replica_id,
             cluster_members: config.cluster,
             local_state: config.local_state,
-            election_state: ElectionState::new_follower(),
+            election_state,
             commit_log,
+            actor_client: config.actor_client,
         }
     }
 
-    pub fn write_to_log(&mut self, input: WriteToLogInput) -> Result<WriteToLogOutput, WriteToLogError> {
+    pub fn enqueue_for_replication(
+        &mut self,
+        input: EnqueueForReplicationInput,
+    ) -> Result<EnqueueForReplicationOutput, EnqueueForReplicationError> {
         // Leader check
         match self.election_state.current_leader() {
             CurrentLeader::Me => { /* carry on */ }
             CurrentLeader::Other(leader_id) => match self.cluster_members.get_metadata(&leader_id) {
                 Some(leader) => {
-                    return Err(WriteToLogError::LeaderRedirect {
+                    return Err(EnqueueForReplicationError::LeaderRedirect {
                         leader_id: leader_id.into_inner(),
                         leader_ip: leader.ip_addr(),
                         leader_port: leader.port(),
@@ -68,62 +88,30 @@ where
                 None => {
                     // This branch should technically be impossible.
                     // TODO:2.5 We can code-ify that by changing FollowerState to have IpAddr as well.
-                    return Err(WriteToLogError::NoLeader);
+                    return Err(EnqueueForReplicationError::NoLeader);
                 }
             },
             CurrentLeader::Unknown => {
-                return Err(WriteToLogError::NoLeader);
+                return Err(EnqueueForReplicationError::NoLeader);
             }
         }
 
         // > If command received from client: append entry to local log,
         // > respond after entry applied to state machine (§5.3)
         let term = self.local_state.current_term();
-        let new_entry = RaftLogEntry {
+        let new_entry = RaftCommitLogEntry {
             term,
             data: input.data.to_vec(),
         };
         let appended_index = self
             .commit_log
             .append(new_entry)
-            .map_err(|e| WriteToLogError::LocalIoError(e))?;
+            .map_err(|e| EnqueueForReplicationError::LocalIoError(e))?;
 
-        Ok(WriteToLogOutput {
+        Ok(EnqueueForReplicationOutput {
             enqueued_term: term,
             enqueued_index: appended_index,
         })
-
-        // self.replicate_new_entry(appended_index, term, input.data.clone());
-        //
-        // self.commit_log.ratchet_fwd_commit_index(appended_index);
-        // self
-        //     .commit_log
-        //     .try_apply_all_committed_entries()
-        //     .map_err(|e| WriteToLogError::LocalIoError(e))?;
-    }
-
-    fn replicate_new_entry(&mut self, _entry_index: Index, entry_term: Term, entry_data: Bytes) {
-        let current_term = self.local_state.current_term().into_inner();
-        let commit_index = self.commit_log.commit_index().val();
-        let (previous_log_entry_term, previous_log_entry_index) = match self.commit_log.latest_entry() {
-            None => (0, 0),
-            Some((term, idx)) => (term.into_inner(), idx.val()),
-        };
-
-        for peer in self.cluster_members.iter_peers() {
-            let req = ProtoAppendEntriesReq {
-                client_node_id: self.my_replica_id.clone().into_inner(),
-                term: current_term,
-                commit_index,
-                previous_log_entry_term,
-                previous_log_entry_index,
-                new_entries: vec![ProtoLogEntry {
-                    term: entry_term.into_inner(),
-                    data: entry_data.to_vec(),
-                }],
-            };
-            let _unpolled_future = peer.client.append_entries(req);
-        }
     }
 
     pub fn handle_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError> {
@@ -207,7 +195,7 @@ where
         &mut self,
         input: AppendEntriesInput,
     ) -> Result<AppendEntriesOutput, AppendEntriesError> {
-        // 0. Ensure candidate is known member.
+        // Ensure candidate is known member.
         if !self.cluster_members.contains_member(&input.leader_id) {
             return Err(AppendEntriesError::ClientNotInCluster);
         }
@@ -227,6 +215,9 @@ where
             self.election_state
                 .transition_to_follower(Some(input.leader_id.clone()));
         }
+
+        // Reset follower timeout.
+        self.election_state.reset_timeout_if_follower();
 
         // 2. Reply false if [my] log doesn't contain an entry at [leader's]
         // prevLogIndex whose term matches [leader's] prevLogTerm (§5.3)
@@ -269,7 +260,7 @@ where
 
             // 4. (append)
             self.commit_log
-                .append(RaftLogEntry {
+                .append(RaftCommitLogEntry {
                     term: new_entry.term,
                     data: new_entry.data.to_vec(),
                 })
@@ -296,27 +287,57 @@ where
 
         // > If commitIndex > lastApplied: increment lastApplied, apply
         // > log[lastApplied] to state machine (§5.3)
-        if let Err(e) = self.commit_log.try_apply_all_committed_entries() {
-            // We've already persisted the log. Applying committed logs is not on critical
-            // path. We can wait to retry next time.
-            // TODO:5 add logging/metrics. This is a dropped error.
-            eprintln!("Error while applying committed entries: {:?}", e);
-            // Fall through
-        }
+        self.commit_log.apply_all_committed_entries();
 
         return output;
     }
 
     pub fn append_entries_result_from_peer(&mut self, _input: AppendEntriesResultFromPeerInput) {
+        let appended_index = Index::new(1);
+
+        self.commit_log.ratchet_fwd_commit_index(appended_index);
+        self.commit_log.apply_all_committed_entries();
+
         unimplemented!()
     }
 
     pub fn leader_timer(&mut self) {
+        let appended_index = Index::new(1);
+        let term = Term::new(1);
+        let entry_data = Bytes::new();
+        self.replicate_new_entry(appended_index, term, entry_data);
+
         unimplemented!()
     }
 
+    fn replicate_new_entry(&mut self, _entry_index: Index, entry_term: Term, entry_data: Bytes) {
+        let current_term = self.local_state.current_term().into_inner();
+        let commit_index = self.commit_log.commit_index().val();
+        let (previous_log_entry_term, previous_log_entry_index) = match self.commit_log.latest_entry() {
+            None => (0, 0),
+            Some((term, idx)) => (term.into_inner(), idx.val()),
+        };
+
+        for peer in self.cluster_members.iter_peers() {
+            let req = ProtoAppendEntriesReq {
+                client_node_id: self.my_replica_id.clone().into_inner(),
+                term: current_term,
+                commit_index,
+                previous_log_entry_term,
+                previous_log_entry_index,
+                new_entries: vec![ProtoLogEntry {
+                    term: entry_term.into_inner(),
+                    data: entry_data.to_vec(),
+                }],
+            };
+            let _unpolled_future = peer.client.append_entries(req);
+        }
+    }
+
     pub fn follower_timeout(&mut self) {
-        unimplemented!()
+        self.election_state.transition_to_candidate();
+        // TODO:1 here next
+        //self.cluster_members.broadcast_request_votes();
     }
 
     // > Raft determines which of two logs is more up-to-date

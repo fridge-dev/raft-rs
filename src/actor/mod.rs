@@ -4,18 +4,6 @@ use std::error::Error;
 use std::fmt::Debug;
 use tokio::sync::{mpsc, oneshot};
 
-pub fn create<L, S>(buffer_size: usize, replica: replica::Replica<L, S>) -> (ActorClient, ReplicaActor<L, S>)
-where
-    L: commitlog::Log<replica::RaftLogEntry>,
-    S: replica::PersistentLocalState,
-{
-    let (tx, rx) = mpsc::channel(buffer_size);
-    let client = ActorClient { sender: tx };
-    let handler = ReplicaActor { receiver: rx, replica };
-
-    (client, handler)
-}
-
 // v1 Design choice: Disk interaction will be synchronous. Future improvement: There should be a
 //                   Disk Actor.
 //
@@ -23,13 +11,13 @@ where
 //                   just send to a channel, where the app has the receiver and applies to state
 //                   machine.
 #[derive(Debug)]
-enum Event {
+pub enum Event {
     // Leader: Write to disk, locally buffer entry to be replicated later. Also stores callback.
     // Candidate: Reject request.
     // Follower: Redirect.
     WriteToLog(
-        replica::WriteToLogInput,
-        Callback<replica::WriteToLogOutput, replica::WriteToLogError>,
+        replica::EnqueueForReplicationInput,
+        Callback<replica::EnqueueForReplicationOutput, replica::EnqueueForReplicationError>,
     ),
 
     // Leader: Grant vote if applicable (includes write to disk). Transition to follower.
@@ -73,7 +61,7 @@ enum Event {
 }
 
 #[derive(Debug)]
-struct Callback<O: Debug, E: Error>(oneshot::Sender<Result<O, E>>);
+pub struct Callback<O: Debug, E: Error>(oneshot::Sender<Result<O, E>>);
 
 impl<O: Debug, E: Error> Callback<O, E> {
     pub fn send(self, message: Result<O, E>) {
@@ -81,16 +69,21 @@ impl<O: Debug, E: Error> Callback<O, E> {
     }
 }
 
+#[derive(Clone)]
 pub struct ActorClient {
     // When to use try_send vs send? Do all calls have same criticality?
     sender: mpsc::Sender<Event>,
 }
 
 impl ActorClient {
+    pub fn new(sender: mpsc::Sender<Event>) -> Self {
+        ActorClient { sender }
+    }
+
     pub async fn write_to_log(
         &self,
-        input: replica::WriteToLogInput,
-    ) -> Result<replica::WriteToLogOutput, replica::WriteToLogError> {
+        input: replica::EnqueueForReplicationInput,
+    ) -> Result<replica::EnqueueForReplicationOutput, replica::EnqueueForReplicationError> {
         let (tx, rx) = oneshot::channel();
         self.send(Event::WriteToLog(input, Callback(tx))).await;
 
@@ -147,7 +140,7 @@ impl ActorClient {
 /// ReplicaActor is replica logic in actor model.
 pub struct ReplicaActor<L, S>
 where
-    L: commitlog::Log<replica::RaftLogEntry>,
+    L: commitlog::Log<replica::RaftCommitLogEntry>,
     S: replica::PersistentLocalState,
 {
     receiver: mpsc::Receiver<Event>,
@@ -156,9 +149,13 @@ where
 
 impl<L, S> ReplicaActor<L, S>
 where
-    L: commitlog::Log<replica::RaftLogEntry>,
+    L: commitlog::Log<replica::RaftCommitLogEntry>,
     S: replica::PersistentLocalState,
 {
+    pub fn new(receiver: mpsc::Receiver<Event>, replica: replica::Replica<L, S>) -> Self {
+        ReplicaActor { receiver, replica }
+    }
+
     pub async fn run_event_loop(mut self) {
         while let Some(event) = self.receiver.recv().await {
             self.handle_event(event);
@@ -171,7 +168,7 @@ where
         match event {
             Event::WriteToLog(input, callback) => {
                 // Need to pass callback into replica.
-                let result = self.replica.write_to_log(input);
+                let result = self.replica.enqueue_for_replication(input);
                 callback.send(result);
             }
             Event::RequestVote(input, callback) => {

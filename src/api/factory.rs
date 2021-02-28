@@ -1,26 +1,34 @@
-use crate::actor;
-use crate::api::client::{create_commit_stream, ClientAdapter, CommitStream};
+use crate::actor::{ActorClient, ReplicaActor};
+use crate::api::client;
+use crate::api::client::{ClientAdapter, CommitStream};
 use crate::commitlog::InMemoryLog;
 use crate::replica::{Cluster, Replica, ReplicaConfig, VolatileLocalState};
 use crate::{api, replica, RaftClientConfig, ReplicatedLog};
 use std::error::Error;
 use std::io;
+use tokio::sync::mpsc;
 
 pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClient, ClientCreationError> {
     let log = InMemoryLog::create().map_err(|e| ClientCreationError::LogInitialization(e))?;
 
     let cluster = try_create_cluster(config.cluster_info).await?;
 
-    let (commit_stream_publisher, commit_stream) = create_commit_stream();
+    let (commit_stream_publisher, commit_stream) = client::create_commit_stream();
+    let (actor_queue_tx, actor_queue_rx) = mpsc::channel(10);
+    let actor_client = ActorClient::new(actor_queue_tx);
 
     let replica = Replica::new(ReplicaConfig {
         cluster,
         log,
         local_state: VolatileLocalState::new(),
         commit_stream_publisher,
+        actor_client: actor_client.clone(),
+        leader_heartbeat_duration: config.leader_heartbeat_duration,
+        follower_min_timeout: config.follower_min_timeout,
+        follower_max_timeout: config.follower_max_timeout,
     });
 
-    let (actor_client, replica_actor) = actor::create(10, replica);
+    let replica_actor = ReplicaActor::new(actor_queue_rx, replica);
     tokio::spawn(replica_actor.run_event_loop());
 
     let client = ClientAdapter { actor_client };
