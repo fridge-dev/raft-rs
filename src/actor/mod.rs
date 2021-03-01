@@ -149,8 +149,8 @@ where
 
 impl<L, S> ReplicaActor<L, S>
 where
-    L: commitlog::Log<replica::RaftCommitLogEntry>,
-    S: replica::PersistentLocalState,
+    L: commitlog::Log<replica::RaftCommitLogEntry> + 'static,
+    S: replica::PersistentLocalState + 'static,
 {
     pub fn new(receiver: mpsc::Receiver<Event>, replica: replica::Replica<L, S>) -> Self {
         ReplicaActor { receiver, replica }

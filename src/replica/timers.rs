@@ -23,8 +23,11 @@ impl LeaderTimerHandle {
         heartbeat_duration: Duration,
         actor_client: actor::ActorClient,
     ) {
-        let mut interval = time::interval(heartbeat_duration);
+        // Eagerly publish timer event before entering first tick loop. This will trigger newly
+        // elected leader to broadcast its heartbeat sooner than the heartbeat duration.
+        actor_client.leader_timer().await;
 
+        let mut interval = time::interval(heartbeat_duration);
         loop {
             interval.tick().await;
             if stop_check.should_stop() {

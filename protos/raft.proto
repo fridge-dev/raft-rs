@@ -40,7 +40,9 @@ message ProtoRequestVoteSuccess {
 }
 
 message ProtoRequestVoteError {
-  ProtoServerFault service_fault = 1;
+  oneof err {
+    ProtoServerFault service_fault = 1;
+  }
 }
 
 message ProtoAppendEntriesReq {
@@ -64,9 +66,11 @@ message ProtoAppendEntriesSuccess {
 }
 
 message ProtoAppendEntriesError {
-  ProtoServerFault service_fault = 1;
-  ProtoClientStaleTerm stale_term = 2;
-  ProtoServerMissingPreviousLog missing_log = 3;
+  oneof err {
+    ProtoServerFault service_fault = 1;
+    ProtoClientStaleTerm stale_term = 2;
+    ProtoServerMissingPreviousLog missing_log = 3;
+  }
 }
 
 // =======================================

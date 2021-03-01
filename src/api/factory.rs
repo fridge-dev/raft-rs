@@ -2,7 +2,7 @@ use crate::actor::{ActorClient, ReplicaActor};
 use crate::api::client;
 use crate::api::client::{ClientAdapter, CommitStream};
 use crate::commitlog::InMemoryLog;
-use crate::replica::{Cluster, Replica, ReplicaConfig, VolatileLocalState};
+use crate::replica::{PeerTracker, Replica, ReplicaConfig, VolatileLocalState};
 use crate::{api, replica, RaftClientConfig, ReplicatedLog};
 use std::error::Error;
 use std::io;
@@ -13,6 +13,8 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
 
     let cluster = try_create_cluster(config.cluster_info).await?;
 
+    let local_state = VolatileLocalState::new(cluster.my_replica_id().clone());
+
     let (commit_stream_publisher, commit_stream) = client::create_commit_stream();
     let (actor_queue_tx, actor_queue_rx) = mpsc::channel(10);
     let actor_client = ActorClient::new(actor_queue_tx);
@@ -20,7 +22,7 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     let replica = Replica::new(ReplicaConfig {
         cluster,
         log,
-        local_state: VolatileLocalState::new(),
+        local_state,
         commit_stream_publisher,
         actor_client: actor_client.clone(),
         leader_heartbeat_duration: config.leader_heartbeat_duration,
@@ -56,7 +58,7 @@ pub enum ClientCreationError {
     MeNotInCluster,
 }
 
-async fn try_create_cluster(cluster_info: api::ClusterInfo) -> Result<replica::Cluster, ClientCreationError> {
+async fn try_create_cluster(cluster_info: api::ClusterInfo) -> Result<replica::PeerTracker, ClientCreationError> {
     let mut my_md = None;
     let mut peers_md = Vec::with_capacity(cluster_info.cluster_members.len() - 1);
     for member_info in cluster_info.cluster_members.into_iter() {
@@ -69,7 +71,7 @@ async fn try_create_cluster(cluster_info: api::ClusterInfo) -> Result<replica::C
 
     let my_md = my_md.ok_or_else(|| ClientCreationError::MeNotInCluster)?;
 
-    Cluster::create_valid_cluster(my_md, peers_md)
+    PeerTracker::create_valid_cluster(my_md, peers_md)
         .await
         .map_err(|e| ClientCreationError::InvalidClusterInfo(e.into()))
 }

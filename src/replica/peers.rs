@@ -1,5 +1,5 @@
 use crate::replica::peer_client::RaftClient;
-use std::collections::hash_map::ValuesMut;
+use std::collections::hash_map::Values;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::Ipv4Addr;
@@ -37,6 +37,10 @@ impl ReplicaMetadata {
         }
     }
 
+    pub fn replica_id(&self) -> &ReplicaId {
+        &self.id
+    }
+
     pub fn ip_addr(&self) -> Ipv4Addr {
         self.ip
     }
@@ -52,13 +56,13 @@ pub struct Peer {
     pub client: RaftClient,
 }
 
-/// Cluster is the group of replicas participating in a single instance of raft together.
-pub struct Cluster {
+/// PeerTracker is the group of replicas participating in a single instance of raft together.
+pub struct PeerTracker {
     my_replica_metadata: ReplicaMetadata,
     peers: HashMap<ReplicaId, Peer>,
 }
 
-impl Cluster {
+impl PeerTracker {
     pub async fn create_valid_cluster(
         my_replica_metadata: ReplicaMetadata,
         peer_replica_metadata: Vec<ReplicaMetadata>,
@@ -70,9 +74,9 @@ impl Cluster {
             return Err(InvalidCluster::DuplicateReplicaId(my_replica_metadata.id.into_inner()));
         }
 
-        let peers = Cluster::create_peers(cluster_members_by_id).await?;
+        let peers = PeerTracker::create_peers(cluster_members_by_id).await?;
 
-        Ok(Cluster {
+        Ok(PeerTracker {
             my_replica_metadata,
             peers,
         })
@@ -120,8 +124,20 @@ impl Cluster {
     }
 
     // Exposing HashMap type, but experimenting with this style.
-    pub fn iter_peers(&mut self) -> ValuesMut<'_, ReplicaId, Peer> {
-        self.peers.values_mut()
+    pub fn iter_peers(&self) -> Values<'_, ReplicaId, Peer> {
+        self.peers.values()
+    }
+
+    pub fn peer(&self, id: &ReplicaId) -> Option<&Peer> {
+        self.peers.get(id)
+    }
+
+    /// `quorum_size` returns the total number of voting replicas (including self) to
+    /// participate in elections.
+    pub fn quorum_size(&self) -> usize {
+        // Currently, we don't support non-voting peers, so we just count
+        // peers + self.
+        self.peers.len() + 1
     }
 }
 

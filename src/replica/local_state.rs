@@ -12,6 +12,10 @@ impl Term {
     pub fn into_inner(self) -> u64 {
         self.0
     }
+
+    pub fn incr(&mut self) {
+        self.0 += 1;
+    }
 }
 
 /// PersistentLocalState is used whenever the raft spec requires that something is persisted to a
@@ -32,6 +36,9 @@ pub trait PersistentLocalState {
     /// CAS: Return true if we successfully mutated state.
     fn store_vote_for_term_if_unvoted(&mut self, expected_current_term: Term, vote: ReplicaId) -> bool;
 
+    /// Return the new term. Used when transitioning to candidate.
+    fn increment_term_and_vote_for_self(&mut self) -> Term;
+
     fn current_term(&self) -> Term;
     fn voted_for_current_term(&self) -> (Term, Option<Arc<ReplicaId>>);
 }
@@ -42,13 +49,15 @@ pub trait PersistentLocalState {
 pub struct VolatileLocalState {
     current_term: Term,
     voted_for_this_term: Option<Arc<ReplicaId>>,
+    my_replica_id: Arc<ReplicaId>,
 }
 
 impl VolatileLocalState {
-    pub fn new() -> Self {
+    pub fn new(my_replica_id: ReplicaId) -> Self {
         VolatileLocalState {
             current_term: Term::new(0),
             voted_for_this_term: None,
+            my_replica_id: Arc::new(my_replica_id),
         }
     }
 }
@@ -76,6 +85,13 @@ impl PersistentLocalState for VolatileLocalState {
         } else {
             false
         }
+    }
+
+    fn increment_term_and_vote_for_self(&mut self) -> Term {
+        self.current_term.incr();
+        self.voted_for_this_term.replace(self.my_replica_id.clone());
+
+        self.current_term
     }
 
     fn current_term(&self) -> Term {

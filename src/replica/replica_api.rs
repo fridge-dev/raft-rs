@@ -95,7 +95,23 @@ pub struct TermOutOfDateInfo {
 }
 
 #[derive(Debug)]
-pub struct RequestVoteResultFromPeerInput; // TODO:2
+pub struct RequestVoteResultFromPeerInput {
+    pub peer_id: ReplicaId,
+    pub term: Term,
+    pub result: RequestVoteResult,
+}
 
 #[derive(Debug)]
-pub struct AppendEntriesResultFromPeerInput; // TODO:2
+pub enum RequestVoteResult {
+    VoteGranted,
+    VoteNotGranted,
+    RetryableFailure,
+    MalformedReply,
+}
+
+#[derive(Debug)]
+pub struct AppendEntriesResultFromPeerInput {
+    pub peer_id: ReplicaId,
+    // TODO:1 more sophisticated err handle
+    pub fail: bool,
+}

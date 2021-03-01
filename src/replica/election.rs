@@ -2,6 +2,7 @@ use crate::actor;
 use crate::commitlog::Index;
 use crate::replica::peers::ReplicaId;
 use crate::replica::timers::{FollowerTimerHandle, LeaderTimerHandle};
+use crate::replica::Term;
 use std::collections::{HashMap, HashSet};
 use tokio::time::Duration;
 
@@ -52,23 +53,46 @@ impl ElectionState {
 
     /// `add_received_vote()` returns the number of unique votes we've received after adding the
     /// provided `vote_from`
-    pub fn add_received_vote_if_candidate(&mut self, vote_from: ReplicaId) -> usize {
+    pub fn add_received_vote_if_candidate(&mut self, term: Term, vote_from: ReplicaId) -> usize {
         if let State::Candidate(cs) = &mut self.state {
-            cs.add_received_vote(vote_from)
+            if cs.term == term {
+                cs.add_received_vote(vote_from)
+            } else {
+                // Received response for outdated term.
+                0
+            }
         } else {
             0
         }
     }
 
-    pub fn transition_to_candidate(&mut self) {
+    // TODO:2 possible name: `on_follower_timeout()`
+    pub fn transition_to_candidate(&mut self, term: Term) {
         self.state = State::Candidate(CandidateState::new(
+            term,
             self.config.follower_min_timeout,
             self.config.follower_max_timeout,
             self.actor_client.clone(),
         ));
     }
 
-    pub fn transition_to_leader(&mut self) {
+    pub fn is_election_open(&self, term: Term) -> bool {
+        if let State::Candidate(cs) = &self.state {
+            cs.term == term
+        } else {
+            false
+        }
+    }
+
+    // TODO:2 possible name: `on_majority_votes`
+    pub fn transition_to_leader_if_not(&mut self) {
+        // TODO:1 figure out how to model validate state machines better.
+        //        Maybe add Term and have a FSM with guaranteed termination
+        //        that resets every Term incr.
+        if let State::Leader(_) = &self.state {
+            return;
+        }
+
         self.state = State::Leader(LeaderState::new(
             self.config.leader_heartbeat_duration,
             self.actor_client.clone(),
@@ -85,6 +109,7 @@ impl ElectionState {
     }
 }
 
+#[derive(Eq, PartialEq)]
 pub enum CurrentLeader {
     Me,
     Other(ReplicaId),
@@ -103,6 +128,7 @@ struct LeaderState {
 }
 
 struct CandidateState {
+    term: Term,
     received_votes_from: HashSet<ReplicaId>,
     follower_timeout_tracker: FollowerTimerHandle,
 }
@@ -126,8 +152,9 @@ impl LeaderState {
 }
 
 impl CandidateState {
-    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::ActorClient) -> Self {
+    pub fn new(term: Term, min_timeout: Duration, max_timeout: Duration, actor_client: actor::ActorClient) -> Self {
         CandidateState {
+            term,
             // with_capacity(3)? CmonBruh, you can't assume that.
             // Well... Because of jittered follower timeout, most of the time if a follower
             // transitions to candidate, they'll also transition to leader. And most of the time, I

@@ -1,17 +1,21 @@
 use crate::actor::ActorClient;
 use crate::api;
 use crate::commitlog::{Index, Log};
-use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
+use crate::grpc::{
+    proto_append_entries_result, proto_request_vote_error, proto_request_vote_result, ProtoAppendEntriesReq,
+    ProtoRequestVoteReq,
+};
 use crate::replica::commit_log::{RaftCommitLogEntry, RaftLog};
 use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState};
 use crate::replica::local_state::{PersistentLocalState, Term};
-use crate::replica::peers::{Cluster, ReplicaId};
+use crate::replica::peer_client::RaftClient;
+use crate::replica::peers::{PeerTracker, ReplicaId};
 use crate::replica::replica_api::{
     AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesResultFromPeerInput,
     EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, RequestVoteError,
     RequestVoteInput, RequestVoteOutput, RequestVoteResultFromPeerInput, TermOutOfDateInfo,
 };
-use bytes::Bytes;
+use crate::replica::RequestVoteResult;
 use std::cmp;
 use tokio::time::Duration;
 
@@ -20,7 +24,7 @@ where
     L: Log<RaftCommitLogEntry>,
     S: PersistentLocalState,
 {
-    pub cluster: Cluster,
+    pub cluster: PeerTracker,
     pub log: L,
     pub local_state: S,
     pub commit_stream_publisher: api::CommitStreamPublisher,
@@ -36,7 +40,7 @@ where
     S: PersistentLocalState,
 {
     my_replica_id: ReplicaId,
-    cluster_members: Cluster,
+    cluster_members: PeerTracker,
     local_state: S,
     election_state: ElectionState,
     commit_log: RaftLog<L>,
@@ -45,8 +49,8 @@ where
 
 impl<L, S> Replica<L, S>
 where
-    L: Log<RaftCommitLogEntry>,
-    S: PersistentLocalState,
+    L: Log<RaftCommitLogEntry> + 'static,
+    S: PersistentLocalState + 'static,
 {
     pub fn new(config: ReplicaConfig<L, S>) -> Self {
         let my_replica_id = config.cluster.my_replica_id().clone();
@@ -187,8 +191,64 @@ where
         Ok(RequestVoteOutput { vote_granted: false })
     }
 
-    pub fn request_vote_result_from_peer(&mut self, _input: RequestVoteResultFromPeerInput) {
-        unimplemented!()
+    // > Raft determines which of two logs is more up-to-date
+    // > by comparing the index and term of the last entries in the
+    // > logs. If the logs have last entries with different terms, then
+    // > the log with the later term is more up-to-date. If the logs
+    // > end with the same term, then whichever log is longer is
+    // > more up-to-date.
+    fn is_candidate_more_up_to_date_than_me(
+        &self,
+        candidate_last_entry_term: Term,
+        candidate_last_entry_index: Index,
+    ) -> bool {
+        if let Some((my_last_entry_term, my_last_entry_index)) = self.commit_log.latest_entry() {
+            if candidate_last_entry_term > my_last_entry_term {
+                return true;
+            } else if candidate_last_entry_term < my_last_entry_term {
+                return false;
+            }
+
+            candidate_last_entry_index > my_last_entry_index
+        } else {
+            true
+        }
+    }
+
+    pub fn request_vote_result_from_peer(&mut self, input: RequestVoteResultFromPeerInput) {
+        match input.result {
+            RequestVoteResult::VoteGranted => {
+                let votes_received = self
+                    .election_state
+                    .add_received_vote_if_candidate(input.term, input.peer_id);
+                let received_majority = 2 * votes_received / self.cluster_members.quorum_size() > 1;
+                if received_majority {
+                    self.election_state.transition_to_leader_if_not();
+                    // No need to set heartbeat immediately. We spawn a heartbeat timer that will
+                    // the first heartbeat.
+                }
+            }
+            RequestVoteResult::VoteNotGranted => {
+                // No action
+            }
+            RequestVoteResult::RetryableFailure | RequestVoteResult::MalformedReply => {
+                if !self.election_state.is_election_open(input.term) {
+                    return;
+                }
+
+                if let Some(peer) = self.cluster_members.peer(&input.peer_id) {
+                    tokio::task::spawn(Self::call_peer_request_vote(
+                        peer.client.clone(),
+                        peer.metadata.replica_id().clone(),
+                        self.new_request_vote_request(input.term),
+                        self.actor_client.clone(),
+                        input.term,
+                    ));
+                } else {
+                    println!("Peer not found while retrying RequestVote. Wtf!")
+                }
+            }
+        }
     }
 
     pub fn handle_append_entries(
@@ -302,15 +362,22 @@ where
     }
 
     pub fn leader_timer(&mut self) {
-        let appended_index = Index::new(1);
-        let term = Term::new(1);
-        let entry_data = Bytes::new();
-        self.replicate_new_entry(appended_index, term, entry_data);
+        // Check still leader
+        if self.election_state.current_leader() != CurrentLeader::Me {
+            return;
+        }
 
-        unimplemented!()
+        for peer in self.cluster_members.iter_peers() {
+            tokio::task::spawn(Self::call_peer_append_entries(
+                peer.client.clone(),
+                peer.metadata.replica_id().clone(),
+                self.new_append_entries_request(),
+                self.actor_client.clone(),
+            ));
+        }
     }
 
-    fn replicate_new_entry(&mut self, _entry_index: Index, entry_term: Term, entry_data: Bytes) {
+    fn new_append_entries_request(&self) -> ProtoAppendEntriesReq {
         let current_term = self.local_state.current_term().into_inner();
         let commit_index = self.commit_log.commit_index().val();
         let (previous_log_entry_term, previous_log_entry_index) = match self.commit_log.latest_entry() {
@@ -318,49 +385,110 @@ where
             Some((term, idx)) => (term.into_inner(), idx.val()),
         };
 
-        for peer in self.cluster_members.iter_peers() {
-            let req = ProtoAppendEntriesReq {
-                client_node_id: self.my_replica_id.clone().into_inner(),
-                term: current_term,
-                commit_index,
-                previous_log_entry_term,
-                previous_log_entry_index,
-                new_entries: vec![ProtoLogEntry {
-                    term: entry_term.into_inner(),
-                    data: entry_data.to_vec(),
-                }],
-            };
-            let _unpolled_future = peer.client.append_entries(req);
+        // TODO:1 Add locally buffered entries. For now, we're just doing empty heartbeats.
+        let new_entries = Vec::new();
+
+        ProtoAppendEntriesReq {
+            client_node_id: self.my_replica_id.clone().into_inner(),
+            term: current_term,
+            commit_index,
+            previous_log_entry_term,
+            previous_log_entry_index,
+            new_entries,
         }
+    }
+
+    async fn call_peer_append_entries(
+        mut peer_client: RaftClient,
+        peer_id: ReplicaId,
+        request: ProtoAppendEntriesReq,
+        callback: ActorClient,
+    ) {
+        let rpc_reply = peer_client.append_entries(request).await;
+
+        // TODO:1 better err handling
+        let fail = match rpc_reply {
+            Ok(rpc_result) => match rpc_result.result {
+                Some(proto_append_entries_result::Result::Ok(_)) => false,
+                Some(proto_append_entries_result::Result::Err(_)) => true,
+                None => true,
+            },
+            Err(_) => true,
+        };
+
+        let callback_input = AppendEntriesResultFromPeerInput { peer_id, fail };
+
+        callback.append_entries_result_from_peer(callback_input).await;
     }
 
     pub fn follower_timeout(&mut self) {
-        self.election_state.transition_to_candidate();
-        // TODO:1 here next
-        //self.cluster_members.broadcast_request_votes();
+        let new_term = self.local_state.increment_term_and_vote_for_self();
+        self.election_state.transition_to_candidate(new_term);
+
+        for peer in self.cluster_members.iter_peers() {
+            tokio::task::spawn(Self::call_peer_request_vote(
+                peer.client.clone(),
+                peer.metadata.replica_id().clone(),
+                self.new_request_vote_request(new_term),
+                self.actor_client.clone(),
+                new_term,
+            ));
+        }
     }
 
-    // > Raft determines which of two logs is more up-to-date
-    // > by comparing the index and term of the last entries in the
-    // > logs. If the logs have last entries with different terms, then
-    // > the log with the later term is more up-to-date. If the logs
-    // > end with the same term, then whichever log is longer is
-    // > more up-to-date.
-    fn is_candidate_more_up_to_date_than_me(
-        &self,
-        candidate_last_entry_term: Term,
-        candidate_last_entry_index: Index,
-    ) -> bool {
-        if let Some((my_last_entry_term, my_last_entry_index)) = self.commit_log.latest_entry() {
-            if candidate_last_entry_term > my_last_entry_term {
-                return true;
-            } else if candidate_last_entry_term < my_last_entry_term {
-                return false;
-            }
+    fn new_request_vote_request(&self, term: Term) -> ProtoRequestVoteReq {
+        let (last_log_entry_term, last_log_entry_index) = match self.commit_log.latest_entry() {
+            None => (0, 0),
+            Some((term, index)) => (term.into_inner(), index.val()),
+        };
 
-            candidate_last_entry_index > my_last_entry_index
-        } else {
-            true
+        ProtoRequestVoteReq {
+            client_node_id: self.my_replica_id.clone().into_inner(),
+            term: term.into_inner(),
+            last_log_entry_index,
+            last_log_entry_term,
         }
+    }
+
+    async fn call_peer_request_vote(
+        mut peer_client: RaftClient,
+        peer_id: ReplicaId,
+        request: ProtoRequestVoteReq,
+        callback: ActorClient,
+        term: Term,
+    ) {
+        let rpc_reply = peer_client.request_vote(request).await;
+
+        let callback_result = match rpc_reply {
+            Ok(rpc_result) => match rpc_result.result {
+                Some(proto_request_vote_result::Result::Ok(success_reply)) => {
+                    if success_reply.vote_granted {
+                        RequestVoteResult::VoteGranted
+                    } else {
+                        RequestVoteResult::VoteNotGranted
+                    }
+                }
+                Some(proto_request_vote_result::Result::Err(err)) => match err.err {
+                    Some(proto_request_vote_error::Err::ServiceFault(fault)) => {
+                        println!("RequestVote Service Fault: {:?}", fault.message);
+                        RequestVoteResult::RetryableFailure
+                    }
+                    None => RequestVoteResult::MalformedReply,
+                },
+                None => RequestVoteResult::MalformedReply,
+            },
+            Err(rpc_status) => {
+                println!("Unmodeled failure from RequestVote RPC call: {:?}", rpc_status);
+                RequestVoteResult::RetryableFailure
+            }
+        };
+
+        let callback_input = RequestVoteResultFromPeerInput {
+            peer_id,
+            term,
+            result: callback_result,
+        };
+
+        callback.request_vote_result_from_peer(callback_input).await;
     }
 }
