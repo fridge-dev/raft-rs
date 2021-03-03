@@ -7,6 +7,7 @@ mod replica;
 mod grpc {
     include!("../generated/raft.rs");
 }
+mod server;
 
 pub use api::create_raft_client;
 pub use api::ClusterInfo;

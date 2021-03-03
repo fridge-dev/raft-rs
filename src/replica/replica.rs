@@ -24,7 +24,7 @@ where
     L: Log<RaftCommitLogEntry>,
     S: PersistentLocalState,
 {
-    pub cluster: PeerTracker,
+    pub peer_tracker: PeerTracker,
     pub log: L,
     pub local_state: S,
     pub commit_stream_publisher: api::CommitStreamPublisher,
@@ -53,7 +53,7 @@ where
     S: PersistentLocalState + 'static,
 {
     pub fn new(config: ReplicaConfig<L, S>) -> Self {
-        let my_replica_id = config.cluster.my_replica_id().clone();
+        let my_replica_id = config.peer_tracker.my_replica_id().clone();
         let election_state = ElectionState::new_follower(
             ElectionConfig {
                 leader_heartbeat_duration: config.leader_heartbeat_duration,
@@ -66,7 +66,7 @@ where
 
         Replica {
             my_replica_id,
-            cluster_members: config.cluster,
+            cluster_members: config.peer_tracker,
             local_state: config.local_state,
             election_state,
             commit_log,
@@ -352,13 +352,12 @@ where
         return output;
     }
 
-    pub fn append_entries_result_from_peer(&mut self, _input: AppendEntriesResultFromPeerInput) {
-        let appended_index = Index::new(1);
+    pub fn append_entries_result_from_peer(&mut self, input: AppendEntriesResultFromPeerInput) {
+        println!("AppendEntries result: {:?}", input);
 
-        self.commit_log.ratchet_fwd_commit_index(appended_index);
-        self.commit_log.apply_all_committed_entries();
-
-        unimplemented!()
+        // let appended_index = Index::new(1);
+        // self.commit_log.ratchet_fwd_commit_index(appended_index);
+        // self.commit_log.apply_all_committed_entries();
     }
 
     pub fn leader_timer(&mut self) {
@@ -469,7 +468,7 @@ where
                     }
                 }
                 Some(proto_request_vote_result::Result::Err(err)) => match err.err {
-                    Some(proto_request_vote_error::Err::ServiceFault(fault)) => {
+                    Some(proto_request_vote_error::Err::ServerFault(fault)) => {
                         println!("RequestVote Service Fault: {:?}", fault.message);
                         RequestVoteResult::RetryableFailure
                     }

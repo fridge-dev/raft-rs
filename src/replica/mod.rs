@@ -134,3 +134,4 @@ pub use replica::ReplicaConfig;
 pub use replica_api::*;
 
 pub(crate) use local_state::Term;
+pub(crate) use peers::ReplicaId;

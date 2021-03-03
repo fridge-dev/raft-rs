@@ -41,7 +41,7 @@ message ProtoRequestVoteSuccess {
 
 message ProtoRequestVoteError {
   oneof err {
-    ProtoServerFault service_fault = 1;
+    ProtoServerFault server_fault = 1;
   }
 }
 
@@ -67,9 +67,10 @@ message ProtoAppendEntriesSuccess {
 
 message ProtoAppendEntriesError {
   oneof err {
-    ProtoServerFault service_fault = 1;
+    ProtoServerFault server_fault = 1;
     ProtoClientStaleTerm stale_term = 2;
     ProtoServerMissingPreviousLog missing_log = 3;
+    ProtoClientNotInCluster client_not_in_cluster = 4;
   }
 }
 
@@ -84,6 +85,10 @@ message ProtoLogEntry {
 
 message ProtoServerFault {
   string message = 1;
+}
+
+message ProtoClientNotInCluster {
+  // Empty
 }
 
 message ProtoClientStaleTerm {
