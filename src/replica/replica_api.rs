@@ -62,6 +62,7 @@ pub struct AppendEntriesInput {
     pub leader_commit_index: Index,
     pub new_entries: Vec<AppendEntriesLogEntry>,
     // > index of log entry immediately preceding new ones
+    // TODO:1 make prev entry optional for fresh log case
     pub leader_previous_log_entry_index: Index, // TODO:2 this is type from commitlog crate. Bad abstraction.
     pub leader_previous_log_entry_term: Term,
 }

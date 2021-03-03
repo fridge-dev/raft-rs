@@ -29,6 +29,7 @@ where
     // Commit stream to publish committed entries to. To be consumed by the application layer to
     // apply committed entries to their state machine.
     commit_stream: api::CommitStreamPublisher,
+    // TODO:1 model as optional.
     // Index of highest log entry known to be committed.
     commit_index: Index,
     // Index of highest log entry applied to state machine.

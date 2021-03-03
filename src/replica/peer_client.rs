@@ -57,9 +57,12 @@ impl RaftClient {
 
     async fn try_connect(endpoint: &Endpoint) -> Conn {
         match endpoint.connect().await {
-            Ok(conn) => Conn::Connected(GrpcRaftClient::new(conn)),
+            Ok(conn) => {
+                println!("Successfully connected to {:?}", endpoint.uri());
+                Conn::Connected(GrpcRaftClient::new(conn))
+            }
             Err(conn_err) => {
-                println!("Failed to connect to {:?} - {:?}", endpoint, conn_err);
+                println!("Failed to connect to {:?} - {:?}", endpoint.uri(), conn_err);
                 Conn::Disconnected
             }
         }

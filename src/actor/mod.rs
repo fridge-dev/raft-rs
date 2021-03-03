@@ -1,6 +1,8 @@
 use crate::commitlog;
 use crate::replica;
+use prost::alloc::fmt::Formatter;
 use std::error::Error;
+use std::fmt;
 use std::fmt::Debug;
 use tokio::sync::{mpsc, oneshot};
 
@@ -60,8 +62,13 @@ pub enum Event {
     FollowerTimeout, /* Payload? */
 }
 
-#[derive(Debug)]
 pub struct Callback<O: Debug, E: Error>(oneshot::Sender<Result<O, E>>);
+
+impl<O: Debug, E: Error> Debug for Callback<O, E> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Callback").finish()
+    }
+}
 
 impl<O: Debug, E: Error> Callback<O, E> {
     pub fn send(self, message: Result<O, E>) {
@@ -158,6 +165,7 @@ where
 
     pub async fn run_event_loop(mut self) {
         while let Some(event) = self.receiver.recv().await {
+            println!("Received: {:?}", event);
             self.handle_event(event);
         }
     }

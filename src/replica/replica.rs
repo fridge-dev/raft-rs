@@ -221,7 +221,8 @@ where
                 let votes_received = self
                     .election_state
                     .add_received_vote_if_candidate(input.term, input.peer_id);
-                let received_majority = 2 * votes_received / self.cluster_members.quorum_size() > 1;
+                let received_majority = 2 * votes_received / self.cluster_members.quorum_size() >= 1;
+                println!("Received {} votes!! Majority? {}", votes_received, received_majority);
                 if received_majority {
                     self.election_state.transition_to_leader_if_not();
                     // No need to set heartbeat immediately. We spawn a heartbeat timer that will
@@ -380,7 +381,7 @@ where
         let current_term = self.local_state.current_term().into_inner();
         let commit_index = self.commit_log.commit_index().val();
         let (previous_log_entry_term, previous_log_entry_index) = match self.commit_log.latest_entry() {
-            None => (0, 0),
+            None => (1, 1), // TODO:1 resolve hack
             Some((term, idx)) => (term.into_inner(), idx.val()),
         };
 

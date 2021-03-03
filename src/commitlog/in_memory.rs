@@ -31,7 +31,7 @@ impl<E: Entry> Log<E> for InMemoryLog<E> {
     fn append(&mut self, entry: E) -> Result<Index, io::Error> {
         self.log.push(entry.into());
 
-        Ok(Index::from(self.log.len()))
+        Ok(Index::new_usize(self.log.len()))
     }
 
     fn read(&self, index: Index) -> Result<Option<E>, io::Error> {
@@ -47,6 +47,6 @@ impl<E: Entry> Log<E> for InMemoryLog<E> {
     }
 
     fn next_index(&self) -> Index {
-        Index::from(self.log.len() + 1)
+        Index::new_usize(self.log.len() + 1)
     }
 }

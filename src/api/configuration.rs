@@ -13,11 +13,13 @@ pub struct RaftClientConfig {
     pub follower_max_timeout: Duration,
 }
 
+#[derive(Clone)]
 pub struct ClusterInfo {
     pub my_replica_id: String,
     pub cluster_members: Vec<MemberInfo>,
 }
 
+#[derive(Clone)]
 pub struct MemberInfo {
     pub replica_id: String,
     pub replica_ip_addr: Ipv4Addr,

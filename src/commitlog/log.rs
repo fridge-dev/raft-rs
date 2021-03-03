@@ -4,13 +4,14 @@ use std::io;
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Ord, Eq)]
 pub struct Index(u64);
 
+// TODO:1 make Index(0) impossible (enum?)
 impl Index {
     pub fn new(index: u64) -> Self {
         Index(index)
     }
 
-    pub fn from(index: usize) -> Self {
-        Index(index as u64)
+    pub fn new_usize(index: usize) -> Self {
+        Self::new(index as u64)
     }
 
     pub fn val(&self) -> u64 {
@@ -22,7 +23,7 @@ impl Index {
     }
 
     pub fn plus(&self, delta: u64) -> Index {
-        Index(self.0 + delta)
+        Index::new(self.0 + delta)
     }
 
     pub fn decr(&mut self, delta: u64) {
@@ -30,7 +31,7 @@ impl Index {
     }
 
     pub fn minus(&self, delta: u64) -> Index {
-        Index(self.0 - delta)
+        Index::new(self.0 - delta)
     }
 }
 

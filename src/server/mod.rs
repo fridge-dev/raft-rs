@@ -1,21 +1,31 @@
-use crate::grpc::grpc_raft_server::{GrpcRaft, GrpcRaftServer};
-use crate::grpc::{ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq, ProtoRequestVoteResult, proto_request_vote_result, ProtoRequestVoteSuccess, ProtoClientNotInCluster, proto_append_entries_result, ProtoAppendEntriesSuccess, ProtoAppendEntriesError, proto_append_entries_error, ProtoClientStaleTerm, ProtoServerMissingPreviousLog, ProtoServerFault};
-use tonic::{Request, Response, Status};
 use crate::actor::ActorClient;
-use crate::replica::{RequestVoteInput, RequestVoteOutput, RequestVoteError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesError, Term, ReplicaId, AppendEntriesLogEntry};
 use crate::commitlog::Index;
+use crate::grpc::grpc_raft_server::{GrpcRaft, GrpcRaftServer};
+use crate::grpc::{
+    proto_append_entries_error, proto_append_entries_result, proto_request_vote_result, ProtoAppendEntriesError,
+    ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoAppendEntriesSuccess, ProtoClientNotInCluster,
+    ProtoClientStaleTerm, ProtoRequestVoteReq, ProtoRequestVoteResult, ProtoRequestVoteSuccess, ProtoServerFault,
+    ProtoServerMissingPreviousLog,
+};
+use crate::replica::{
+    AppendEntriesError, AppendEntriesInput, AppendEntriesLogEntry, AppendEntriesOutput, ReplicaId, RequestVoteError,
+    RequestVoteInput, RequestVoteOutput, Term,
+};
 use bytes::Bytes;
 use std::net::SocketAddr;
 use tonic::transport::Server;
+use tonic::{Request, Response, Status};
 
 /// ServerAdapter is the type that implements the Raft gRPC interface.
 pub struct ServerAdapter {
+    replica_id: String,
     local_replica: ActorClient,
 }
 
 impl ServerAdapter {
-    pub fn new(local_replica: ActorClient) -> Self {
+    pub fn new(replica_id: String, local_replica: ActorClient) -> Self {
         ServerAdapter {
+            replica_id,
             local_replica,
         }
     }
@@ -31,10 +41,11 @@ impl ServerAdapter {
 
         println!("Raft gRPC server run() exited: {:?}", result);
     }
-}
 
-// associated methods
-impl ServerAdapter {
+    fn log(&self, msg: String) {
+        println!("[{}] {}", self.replica_id, msg);
+    }
+
     fn convert_request_vote_input(rpc_request: ProtoRequestVoteReq) -> RequestVoteInput {
         RequestVoteInput {
             candidate_term: Term::new(rpc_request.term),
@@ -44,30 +55,27 @@ impl ServerAdapter {
         }
     }
 
-    fn convert_request_vote_result(app_result: Result<RequestVoteOutput, RequestVoteError>) -> ProtoRequestVoteResult {
-        println!("Request vote result: {:?}", app_result);
+    fn convert_request_vote_result(
+        &self,
+        app_result: Result<RequestVoteOutput, RequestVoteError>,
+    ) -> ProtoRequestVoteResult {
+        self.log(format!("Request vote result: {:?}", app_result));
         match app_result {
-            Ok(ok) => {
-                ProtoRequestVoteResult {
-                    result: Some(proto_request_vote_result::Result::Ok(ProtoRequestVoteSuccess {
-                        vote_granted: ok.vote_granted,
-                    }))
-                }
-            }
-            Err(RequestVoteError::CandidateNotInCluster) => {
-                ProtoRequestVoteResult {
-                    result: Some(proto_request_vote_result::Result::Ok(ProtoRequestVoteSuccess {
-                        vote_granted: false,
-                    }))
-                }
-            }
-            Err(RequestVoteError::RequestTermOutOfDate(_)) => {
-                ProtoRequestVoteResult {
-                    result: Some(proto_request_vote_result::Result::Ok(ProtoRequestVoteSuccess {
-                        vote_granted: false,
-                    }))
-                }
-            }
+            Ok(ok) => ProtoRequestVoteResult {
+                result: Some(proto_request_vote_result::Result::Ok(ProtoRequestVoteSuccess {
+                    vote_granted: ok.vote_granted,
+                })),
+            },
+            Err(RequestVoteError::CandidateNotInCluster) => ProtoRequestVoteResult {
+                result: Some(proto_request_vote_result::Result::Ok(ProtoRequestVoteSuccess {
+                    vote_granted: false,
+                })),
+            },
+            Err(RequestVoteError::RequestTermOutOfDate(_)) => ProtoRequestVoteResult {
+                result: Some(proto_request_vote_result::Result::Ok(ProtoRequestVoteSuccess {
+                    vote_granted: false,
+                })),
+            },
         }
     }
 
@@ -90,55 +98,55 @@ impl ServerAdapter {
         }
     }
 
-    fn convert_append_entries_result(app_result: Result<AppendEntriesOutput, AppendEntriesError>) -> ProtoAppendEntriesResult {
-        if let Err(e) = &app_result {
-            println!("Append entries error: {:?}", e);
-        }
-
+    fn convert_append_entries_result(
+        &self,
+        app_result: Result<AppendEntriesOutput, AppendEntriesError>,
+    ) -> ProtoAppendEntriesResult {
+        self.log(format!("Append entries result: {:?}", app_result));
         match app_result {
             Ok(_) => {
                 ProtoAppendEntriesResult {
                     result: Some(proto_append_entries_result::Result::Ok(ProtoAppendEntriesSuccess {
                         // Empty
-                    }))
+                    })),
                 }
             }
             Err(AppendEntriesError::ClientNotInCluster) => {
                 ProtoAppendEntriesResult {
                     result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
-                        err: Some(proto_append_entries_error::Err::ClientNotInCluster(ProtoClientNotInCluster {
+                        err: Some(proto_append_entries_error::Err::ClientNotInCluster(
+                            ProtoClientNotInCluster {
                             // Nothing
-                        })),
+                        },
+                        )),
                     })),
                 }
             }
-            Err(AppendEntriesError::ClientTermOutOfDate(term_info)) => {
-                ProtoAppendEntriesResult {
-                    result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
-                        err: Some(proto_append_entries_error::Err::StaleTerm(ProtoClientStaleTerm {
-                            current_term: term_info.current_term.into_inner(),
-                        })),
+            Err(AppendEntriesError::ClientTermOutOfDate(term_info)) => ProtoAppendEntriesResult {
+                result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
+                    err: Some(proto_append_entries_error::Err::StaleTerm(ProtoClientStaleTerm {
+                        current_term: term_info.current_term.into_inner(),
                     })),
-                }
-            }
+                })),
+            },
             Err(AppendEntriesError::ServerMissingPreviousLogEntry) => {
                 ProtoAppendEntriesResult {
                     result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
-                        err: Some(proto_append_entries_error::Err::MissingLog(ProtoServerMissingPreviousLog {
+                        err: Some(proto_append_entries_error::Err::MissingLog(
+                            ProtoServerMissingPreviousLog {
                             // Empty
-                        })),
+                        },
+                        )),
                     })),
                 }
             }
-            Err(AppendEntriesError::ServerIoError(_)) => {
-                ProtoAppendEntriesResult {
-                    result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
-                        err: Some(proto_append_entries_error::Err::ServerFault(ProtoServerFault {
-                            message: "Local IO failure".to_string(),
-                        })),
+            Err(AppendEntriesError::ServerIoError(_)) => ProtoAppendEntriesResult {
+                result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
+                    err: Some(proto_append_entries_error::Err::ServerFault(ProtoServerFault {
+                        message: "Local IO failure".to_string(),
                     })),
-                }
-            }
+                })),
+            },
         }
     }
 }
@@ -151,7 +159,7 @@ impl GrpcRaft for ServerAdapter {
     ) -> Result<Response<ProtoRequestVoteResult>, Status> {
         let app_input = Self::convert_request_vote_input(rpc_request.into_inner());
         let app_result = self.local_replica.request_vote(app_input).await;
-        let rpc_reply = Self::convert_request_vote_result(app_result);
+        let rpc_reply = self.convert_request_vote_result(app_result);
         Ok(Response::new(rpc_reply))
     }
 
@@ -161,7 +169,7 @@ impl GrpcRaft for ServerAdapter {
     ) -> Result<Response<ProtoAppendEntriesResult>, Status> {
         let app_input = Self::convert_append_entries_input(rpc_request.into_inner());
         let app_result = self.local_replica.append_entries(app_input).await;
-        let rpc_reply = Self::convert_append_entries_result(app_result);
+        let rpc_reply = self.convert_append_entries_result(app_result);
         Ok(Response::new(rpc_reply))
     }
 }

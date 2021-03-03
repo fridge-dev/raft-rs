@@ -3,18 +3,17 @@ use crate::api::client;
 use crate::api::client::{ClientAdapter, CommitStream};
 use crate::commitlog::InMemoryLog;
 use crate::replica::{PeerTracker, Replica, ReplicaConfig, VolatileLocalState};
+use crate::server::ServerAdapter;
 use crate::{api, replica, RaftClientConfig, ReplicatedLog};
 use std::error::Error;
 use std::io;
-use tokio::sync::mpsc;
-use crate::server::ServerAdapter;
 use std::net::{SocketAddr, SocketAddrV4};
+use tokio::sync::mpsc;
 
 pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClient, ClientCreationError> {
     let log = InMemoryLog::create().map_err(|e| ClientCreationError::LogInitialization(e))?;
 
-    let server_addr = get_my_server_addr(&config.cluster_info)?;
-    let peer_tracker = try_create_cluster(config.cluster_info).await?;
+    let peer_tracker = try_create_cluster(config.cluster_info.clone()).await?;
     let local_state = VolatileLocalState::new(peer_tracker.my_replica_id().clone());
 
     let (commit_stream_publisher, commit_stream) = client::create_commit_stream();
@@ -35,7 +34,8 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     let replica_actor = ReplicaActor::new(actor_queue_rx, replica);
     tokio::spawn(replica_actor.run_event_loop());
 
-    let replica_raft_server = ServerAdapter::new(actor_client.clone());
+    let server_addr = get_my_server_addr(&config.cluster_info)?;
+    let replica_raft_server = ServerAdapter::new(config.cluster_info.my_replica_id, actor_client.clone());
     tokio::spawn(replica_raft_server.run(server_addr));
 
     let client = ClientAdapter { actor_client };
@@ -66,7 +66,10 @@ pub enum ClientCreationError {
 fn get_my_server_addr(cluster_info: &api::ClusterInfo) -> Result<SocketAddr, ClientCreationError> {
     for member_info in cluster_info.cluster_members.iter() {
         if member_info.replica_id == cluster_info.my_replica_id {
-            return Ok(SocketAddr::V4(SocketAddrV4::new(member_info.replica_ip_addr, member_info.replica_port)));
+            return Ok(SocketAddr::V4(SocketAddrV4::new(
+                member_info.replica_ip_addr,
+                member_info.replica_port,
+            )));
         }
     }
 
