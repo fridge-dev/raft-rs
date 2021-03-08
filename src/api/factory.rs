@@ -1,10 +1,9 @@
 use crate::actor::{ActorClient, ReplicaActor};
 use crate::api::client;
-use crate::api::client::{ClientAdapter, CommitStream};
 use crate::commitlog::InMemoryLog;
 use crate::replica::{PeerTracker, Replica, ReplicaConfig, VolatileLocalState};
 use crate::server::ServerAdapter;
-use crate::{api, replica, RaftClientConfig, ReplicatedLog};
+use crate::{api, replica, RaftClientConfig, ReplicatedLog, CommitStream};
 use std::error::Error;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
@@ -38,17 +37,17 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     let replica_raft_server = ServerAdapter::new(config.cluster_info.my_replica_id, actor_client.clone());
     tokio::spawn(replica_raft_server.run(server_addr));
 
-    let client = ClientAdapter { actor_client };
+    let replication_log = client::new_replicated_log(actor_client);
 
     Ok(CreatedClient {
-        replication_log: Box::new(client),
+        replication_log,
         commit_stream,
     })
 }
 
 // Name could be better
 pub struct CreatedClient {
-    pub replication_log: Box<dyn ReplicatedLog>,
+    pub replication_log: ReplicatedLog,
     pub commit_stream: CommitStream,
 }
 

@@ -50,13 +50,15 @@ impl CommitStream {
     }
 }
 
-// For external application to call into this library.
-#[async_trait::async_trait]
-pub trait ReplicatedLog {
-    async fn start_replication(
-        &self,
-        input: StartReplicationInput,
-    ) -> Result<StartReplicationOutput, StartReplicationError>;
+pub fn new_replicated_log(actor_client: ActorClient) -> ReplicatedLog {
+    ReplicatedLog {
+         actor_client,
+    }
+}
+
+/// ReplicatedLog is the replicated log for external application to append to.
+pub struct ReplicatedLog {
+    actor_client: ActorClient,
 }
 
 #[derive(Debug)]
@@ -95,14 +97,8 @@ pub enum StartReplicationError {
     LocalIoError(io::Error),
 }
 
-/// ClientAdapter adapts the `ActorClient` API to the `ReplicatedStateMachine` API.
-pub struct ClientAdapter {
-    pub actor_client: ActorClient,
-}
-
-#[async_trait::async_trait]
-impl ReplicatedLog for ClientAdapter {
-    async fn start_replication(
+impl ReplicatedLog {
+    pub async fn start_replication(
         &self,
         input: StartReplicationInput,
     ) -> Result<StartReplicationOutput, StartReplicationError> {

@@ -18,7 +18,6 @@ enum Conn {
 
 impl RaftClient {
     pub async fn new(uri: Uri) -> Self {
-        println!("Connecting to {:?} ...", uri);
         let endpoint = Endpoint::from(uri);
         let connection = Self::try_connect(&endpoint).await;
 

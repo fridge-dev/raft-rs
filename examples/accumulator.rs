@@ -56,7 +56,7 @@ mod accumulator_impl {
     use tokio::time::Duration;
 
     pub struct Accumulator {
-        replicated_log: Box<dyn raft::ReplicatedLog>,
+        replicated_log: raft::ReplicatedLog,
         commit_stream: raft::CommitStream,
         state_machine: AccumulatorStateMachine,
     }
