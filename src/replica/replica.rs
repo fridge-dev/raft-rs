@@ -142,6 +142,7 @@ where
         let increased = self.local_state.store_term_if_increased(input.candidate_term);
         if increased {
             self.election_state.transition_to_follower(None);
+            slog::info!(self.logger, "Election state: {:?}", self.election_state);
         }
 
         // 2. If votedFor is null or candidateId, and candidate’s log is at
@@ -224,16 +225,26 @@ where
                 let votes_received = self
                     .election_state
                     .add_received_vote_if_candidate(input.term, input.peer_id);
+                if votes_received > 0 {
+                    slog::info!(
+                        self.logger,
+                        "Received {}/{} votes for term {}",
+                        votes_received,
+                        self.cluster_members.quorum_size(),
+                        input.term,
+                    );
+                } else {
+                    slog::info!(
+                        self.logger,
+                        "Received vote for term {}, but we're no longer a candidate for that term.",
+                        input.term,
+                    )
+                }
+
                 let received_majority = 2 * votes_received / self.cluster_members.quorum_size() >= 1;
-                slog::info!(
-                    self.logger,
-                    "Received {}/{} votes. Majority? {}",
-                    votes_received,
-                    self.cluster_members.quorum_size(),
-                    received_majority
-                );
                 if received_majority {
                     self.election_state.transition_to_leader_if_not();
+                    slog::info!(self.logger, "Election state: {:?}", self.election_state);
                     // No need to set heartbeat immediately. We spawn a heartbeat timer that will
                     // the first heartbeat.
                 }
@@ -290,6 +301,15 @@ where
         if increased {
             self.election_state
                 .transition_to_follower(Some(input.leader_id.clone()));
+        } else {
+            // If this is the first AppendEntries we've seen for this term, set the leader info
+            // for this term.
+            let awaiting_election_outcome = self.election_state.current_leader() == CurrentLeader::Unknown;
+            let append_entries_for_current_term = self.local_state.current_term() == input.leader_term;
+            if awaiting_election_outcome && append_entries_for_current_term {
+                self.election_state
+                    .transition_to_follower(Some(input.leader_id.clone()));
+            }
         }
 
         // Reset follower timeout.
@@ -439,6 +459,7 @@ where
     pub fn follower_timeout(&mut self) {
         let new_term = self.local_state.increment_term_and_vote_for_self();
         self.election_state.transition_to_candidate(new_term);
+        slog::info!(self.logger, "Election state: {:?}", self.election_state);
 
         for peer in self.cluster_members.iter_peers() {
             // TODO:1.5 add RequestId to remote call

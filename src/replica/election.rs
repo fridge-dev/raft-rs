@@ -4,6 +4,7 @@ use crate::replica::peers::ReplicaId;
 use crate::replica::timers::{FollowerTimerHandle, LeaderTimerHandle};
 use crate::replica::Term;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use tokio::time::Duration;
 
 #[derive(Copy, Clone)]
@@ -106,6 +107,20 @@ impl ElectionState {
             self.config.follower_max_timeout,
             self.actor_client.clone(),
         ));
+    }
+}
+
+impl fmt::Debug for ElectionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.state {
+            State::Leader(_) => write!(f, "Leader"),
+            State::Candidate(cs) => write!(f, "Candidate(Term={})", cs.term),
+            State::Follower(FollowerState {
+                leader_id: Some(leader_id),
+                ..
+            }) => write!(f, "Follower(Leader={})", leader_id),
+            State::Follower(FollowerState { leader_id: None, .. }) => write!(f, "Follower(Leader=None)"),
+        }
     }
 }
 
