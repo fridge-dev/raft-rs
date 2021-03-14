@@ -21,9 +21,9 @@ pub struct CommitStreamPublisher {
 }
 
 impl CommitStreamPublisher {
-    pub fn notify_commit(&self, result: CommittedEntry) {
+    pub fn notify_commit(&self, logger: &slog::Logger, result: CommittedEntry) {
         if let Err(_) = self.sender.send(result) {
-            println!("CommitStream has disconnected.");
+            slog::warn!(logger, "CommitStream has disconnected.");
         }
     }
 }
@@ -51,9 +51,7 @@ impl CommitStream {
 }
 
 pub fn new_replicated_log(actor_client: ActorClient) -> ReplicatedLog {
-    ReplicatedLog {
-         actor_client,
-    }
+    ReplicatedLog { actor_client }
 }
 
 /// ReplicatedLog is the replicated log for external application to append to.

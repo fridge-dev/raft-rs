@@ -21,6 +21,9 @@ pub struct RaftLog<L>
 where
     L: Log<RaftCommitLogEntry>,
 {
+    // Application's info/debug log.
+    logger: slog::Logger,
+
     // This is the log that we're replicating.
     log: L,
     // Metadata about the highest log entry that we've locally written. It must be updated atomically.
@@ -40,11 +43,12 @@ impl<L> RaftLog<L>
 where
     L: Log<RaftCommitLogEntry>,
 {
-    pub fn new(log: L, commit_stream: api::CommitStreamPublisher) -> Self {
+    pub fn new(logger: slog::Logger, log: L, commit_stream: api::CommitStreamPublisher) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
         assert_eq!(log.next_index(), Index::new(1));
 
         RaftLog {
+            logger,
             log,
             latest_entry_metadata: None,
             commit_stream,
@@ -107,8 +111,7 @@ where
         if let Err(e) = self.try_apply_all_committed_entries() {
             // We've already persisted the log. Applying committed logs is not on critical
             // path. We can wait to retry next time.
-            // TODO:5 add logging/metrics. This is a dropped error.
-            println!("Failed to apply a log entry. {:?}", e)
+            slog::error!(self.logger, "Failed to apply a log entry. {:?}", e);
         }
     }
 
@@ -124,13 +127,16 @@ where
                 Err(e) => return Err(e),
             };
 
-            self.commit_stream.notify_commit(api::CommittedEntry {
-                key: api::EntryKey {
-                    term: entry.term,
-                    entry_index: next_index,
+            self.commit_stream.notify_commit(
+                &self.logger,
+                api::CommittedEntry {
+                    key: api::EntryKey {
+                        term: entry.term,
+                        entry_index: next_index,
+                    },
+                    data: Bytes::from(entry.data),
                 },
-                data: Bytes::from(entry.data),
-            });
+            );
             self.last_applied_index = next_index;
         }
 

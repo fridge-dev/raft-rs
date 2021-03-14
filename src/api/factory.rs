@@ -2,17 +2,19 @@ use crate::actor::{ActorClient, ReplicaActor};
 use crate::api::client;
 use crate::commitlog::InMemoryLog;
 use crate::replica::{PeerTracker, Replica, ReplicaConfig, VolatileLocalState};
-use crate::server::ServerAdapter;
-use crate::{api, replica, RaftClientConfig, ReplicatedLog, CommitStream};
+use crate::server::RpcServer;
+use crate::{api, replica, CommitStream, RaftClientConfig, ReplicatedLog};
 use std::error::Error;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
 use tokio::sync::mpsc;
 
 pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClient, ClientCreationError> {
-    let log = InMemoryLog::create().map_err(|e| ClientCreationError::LogInitialization(e))?;
+    let root_logger = config.info_logger;
 
-    let peer_tracker = try_create_cluster(config.cluster_info.clone()).await?;
+    let commit_log = InMemoryLog::create(root_logger.clone()).map_err(|e| ClientCreationError::LogInitialization(e))?;
+
+    let peer_tracker = try_create_peer_tracker(root_logger.clone(), config.cluster_info.clone()).await?;
     let local_state = VolatileLocalState::new(peer_tracker.my_replica_id().clone());
 
     let (commit_stream_publisher, commit_stream) = client::create_commit_stream();
@@ -21,20 +23,25 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
 
     let replica = Replica::new(ReplicaConfig {
         peer_tracker,
-        log,
+        commit_log,
         local_state,
         commit_stream_publisher,
         actor_client: actor_client.clone(),
         leader_heartbeat_duration: config.leader_heartbeat_duration,
         follower_min_timeout: config.follower_min_timeout,
         follower_max_timeout: config.follower_max_timeout,
+        logger: root_logger.clone(),
     });
 
-    let replica_actor = ReplicaActor::new(actor_queue_rx, replica);
+    let replica_actor = ReplicaActor::new(root_logger.clone(), actor_queue_rx, replica);
     tokio::spawn(replica_actor.run_event_loop());
 
     let server_addr = get_my_server_addr(&config.cluster_info)?;
-    let replica_raft_server = ServerAdapter::new(config.cluster_info.my_replica_id, actor_client.clone());
+    let replica_raft_server = RpcServer::new(
+        root_logger.clone(),
+        config.cluster_info.my_replica_id,
+        actor_client.clone(),
+    );
     tokio::spawn(replica_raft_server.run(server_addr));
 
     let replication_log = client::new_replicated_log(actor_client);
@@ -75,7 +82,10 @@ fn get_my_server_addr(cluster_info: &api::ClusterInfo) -> Result<SocketAddr, Cli
     Err(ClientCreationError::MeNotInCluster)
 }
 
-async fn try_create_cluster(cluster_info: api::ClusterInfo) -> Result<replica::PeerTracker, ClientCreationError> {
+async fn try_create_peer_tracker(
+    logger: slog::Logger,
+    cluster_info: api::ClusterInfo,
+) -> Result<replica::PeerTracker, ClientCreationError> {
     let mut my_md = None;
     let mut peers_md = Vec::with_capacity(cluster_info.cluster_members.len() - 1);
     for member_info in cluster_info.cluster_members.into_iter() {
@@ -88,7 +98,7 @@ async fn try_create_cluster(cluster_info: api::ClusterInfo) -> Result<replica::P
 
     let my_md = my_md.ok_or_else(|| ClientCreationError::MeNotInCluster)?;
 
-    PeerTracker::create_valid_cluster(my_md, peers_md)
+    PeerTracker::create_valid_peer_tracker(logger, my_md, peers_md)
         .await
         .map_err(|e| ClientCreationError::InvalidClusterInfo(e.into()))
 }

@@ -4,6 +4,7 @@ use tonic::transport::{Channel, Endpoint, Uri};
 
 #[derive(Clone)]
 pub struct RaftClient {
+    logger: slog::Logger,
     endpoint: Endpoint,
     connection: Conn,
 }
@@ -17,11 +18,15 @@ enum Conn {
 }
 
 impl RaftClient {
-    pub async fn new(uri: Uri) -> Self {
+    pub async fn new(logger: slog::Logger, uri: Uri) -> Self {
         let endpoint = Endpoint::from(uri);
-        let connection = Self::try_connect(&endpoint).await;
+        let connection = Self::try_connect(&logger, &endpoint).await;
 
-        RaftClient { endpoint, connection }
+        RaftClient {
+            logger,
+            endpoint,
+            connection,
+        }
     }
 
     pub async fn request_vote(
@@ -50,18 +55,20 @@ impl RaftClient {
 
     async fn try_reconnect_if_needed(&mut self) {
         if let Conn::Disconnected = self.connection {
-            self.connection = Self::try_connect(&self.endpoint).await;
+            self.connection = Self::try_connect(&self.logger, &self.endpoint).await;
+        } else {
+            slog::debug!(self.logger, "Connection re-used");
         }
     }
 
-    async fn try_connect(endpoint: &Endpoint) -> Conn {
+    async fn try_connect(logger: &slog::Logger, endpoint: &Endpoint) -> Conn {
         match endpoint.connect().await {
             Ok(conn) => {
-                println!("Successfully connected to {:?}", endpoint.uri());
+                slog::debug!(logger, "Successfully connected");
                 Conn::Connected(GrpcRaftClient::new(conn))
             }
             Err(conn_err) => {
-                println!("Failed to connect to {:?} - {:?}", endpoint.uri(), conn_err);
+                slog::warn!(logger, "Failed to connect: {:?}", conn_err);
                 Conn::Disconnected
             }
         }

@@ -150,6 +150,7 @@ where
     L: commitlog::Log<replica::RaftCommitLogEntry>,
     S: replica::PersistentLocalState,
 {
+    logger: slog::Logger,
     receiver: mpsc::Receiver<Event>,
     replica: replica::Replica<L, S>,
 }
@@ -159,13 +160,17 @@ where
     L: commitlog::Log<replica::RaftCommitLogEntry> + 'static,
     S: replica::PersistentLocalState + 'static,
 {
-    pub fn new(receiver: mpsc::Receiver<Event>, replica: replica::Replica<L, S>) -> Self {
-        ReplicaActor { receiver, replica }
+    pub fn new(logger: slog::Logger, receiver: mpsc::Receiver<Event>, replica: replica::Replica<L, S>) -> Self {
+        ReplicaActor {
+            logger,
+            receiver,
+            replica,
+        }
     }
 
     pub async fn run_event_loop(mut self) {
         while let Some(event) = self.receiver.recv().await {
-            println!("Received: {:?}", event);
+            slog::debug!(self.logger, "Received: {:?}", event);
             self.handle_event(event);
         }
     }

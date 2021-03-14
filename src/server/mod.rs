@@ -16,22 +16,25 @@ use std::net::SocketAddr;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
-/// ServerAdapter is the type that implements the Raft gRPC interface.
-pub struct ServerAdapter {
+/// RpcServer is the type that implements the Raft gRPC interface.
+pub struct RpcServer {
+    logger: slog::Logger,
     replica_id: String,
     local_replica: ActorClient,
 }
 
-impl ServerAdapter {
-    pub fn new(replica_id: String, local_replica: ActorClient) -> Self {
-        ServerAdapter {
+impl RpcServer {
+    pub fn new(logger: slog::Logger, replica_id: String, local_replica: ActorClient) -> Self {
+        RpcServer {
+            logger,
             replica_id,
             local_replica,
         }
     }
 
     pub async fn run(self, socket_addr: SocketAddr) {
-        println!("Going to listen on '{:?}'", socket_addr);
+        let logger = self.logger.clone();
+        slog::info!(logger, "Listening on '{:?}'", socket_addr);
 
         // TODO:2 if server port is unavailable, signal back to caller.
         let result = Server::builder()
@@ -39,11 +42,7 @@ impl ServerAdapter {
             .serve(socket_addr)
             .await;
 
-        println!("Raft gRPC server run() exited: {:?}", result);
-    }
-
-    fn log(&self, msg: String) {
-        println!("[{}] {}", self.replica_id, msg);
+        slog::warn!(logger, "Server run() has exited: {:?}", result);
     }
 
     fn convert_request_vote_input(rpc_request: ProtoRequestVoteReq) -> RequestVoteInput {
@@ -59,7 +58,6 @@ impl ServerAdapter {
         &self,
         app_result: Result<RequestVoteOutput, RequestVoteError>,
     ) -> ProtoRequestVoteResult {
-        self.log(format!("Request vote result: {:?}", app_result));
         match app_result {
             Ok(ok) => ProtoRequestVoteResult {
                 result: Some(proto_request_vote_result::Result::Ok(ProtoRequestVoteSuccess {
@@ -102,7 +100,6 @@ impl ServerAdapter {
         &self,
         app_result: Result<AppendEntriesOutput, AppendEntriesError>,
     ) -> ProtoAppendEntriesResult {
-        self.log(format!("Append entries result: {:?}", app_result));
         match app_result {
             Ok(_) => {
                 ProtoAppendEntriesResult {
@@ -152,13 +149,15 @@ impl ServerAdapter {
 }
 
 #[async_trait::async_trait]
-impl GrpcRaft for ServerAdapter {
+impl GrpcRaft for RpcServer {
     async fn request_vote(
         &self,
         rpc_request: Request<ProtoRequestVoteReq>,
     ) -> Result<Response<ProtoRequestVoteResult>, Status> {
         let app_input = Self::convert_request_vote_input(rpc_request.into_inner());
+        slog::debug!(self.logger, "Wire - {:?}", app_input);
         let app_result = self.local_replica.request_vote(app_input).await;
+        slog::debug!(self.logger, "Wire - {:?}", app_result);
         let rpc_reply = self.convert_request_vote_result(app_result);
         Ok(Response::new(rpc_reply))
     }
@@ -168,7 +167,9 @@ impl GrpcRaft for ServerAdapter {
         rpc_request: Request<ProtoAppendEntriesReq>,
     ) -> Result<Response<ProtoAppendEntriesResult>, Status> {
         let app_input = Self::convert_append_entries_input(rpc_request.into_inner());
+        slog::debug!(self.logger, "Wire - {:?}", app_input);
         let app_result = self.local_replica.append_entries(app_input).await;
+        slog::debug!(self.logger, "Wire - {:?}", app_result);
         let rpc_reply = self.convert_append_entries_result(app_result);
         Ok(Response::new(rpc_reply))
     }

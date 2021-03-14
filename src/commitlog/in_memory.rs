@@ -10,13 +10,15 @@ pub struct InMemoryLog<E: Entry> {
     // We don't *need* to convert these to bytes. We could just hold the original entry in memory,
     // but we want to exercise the conversion logic.
     log: Vec<Vec<u8>>,
+    info_log: slog::Logger,
     _pd: PhantomData<E>,
 }
 
 impl<E: Entry> InMemoryLog<E> {
-    pub fn create() -> Result<Self, io::Error> {
+    pub fn create(info_log: slog::Logger) -> Result<Self, io::Error> {
         Ok(InMemoryLog {
             log: vec![],
+            info_log,
             _pd: PhantomData::default(),
         })
     }
@@ -28,7 +30,10 @@ impl<E: Entry> InMemoryLog<E> {
 }
 
 impl<E: Entry> Log<E> for InMemoryLog<E> {
+    // returns the log entry index that was just used to append the entry
     fn append(&mut self, entry: E) -> Result<Index, io::Error> {
+        let entry = entry.into();
+        slog::info!(self.info_log, "{:?}", entry);
         self.log.push(entry.into());
 
         Ok(Index::new_usize(self.log.len()))

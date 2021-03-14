@@ -4,8 +4,9 @@ use std::net::Ipv4Addr;
 use tokio::time::Duration;
 
 pub struct RaftClientConfig {
-    // A directory where we can create files and sub-directories.
-    pub log_directory: String,
+    // A directory where we can create files and sub-directories to support the commit log.
+    pub commit_log_directory: String,
+    pub info_logger: slog::Logger,
     pub cluster_info: ClusterInfo,
     // TODO:1 make optional?
     pub leader_heartbeat_duration: Duration,

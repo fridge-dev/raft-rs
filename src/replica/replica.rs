@@ -25,13 +25,14 @@ where
     S: PersistentLocalState,
 {
     pub peer_tracker: PeerTracker,
-    pub log: L,
+    pub commit_log: L,
     pub local_state: S,
     pub commit_stream_publisher: api::CommitStreamPublisher,
     pub actor_client: ActorClient,
     pub leader_heartbeat_duration: Duration,
     pub follower_min_timeout: Duration,
     pub follower_max_timeout: Duration,
+    pub logger: slog::Logger,
 }
 
 pub struct Replica<L, S>
@@ -45,6 +46,7 @@ where
     election_state: ElectionState,
     commit_log: RaftLog<L>,
     actor_client: ActorClient,
+    logger: slog::Logger,
 }
 
 impl<L, S> Replica<L, S>
@@ -62,7 +64,7 @@ where
             },
             config.actor_client.clone(),
         );
-        let commit_log = RaftLog::new(config.log, config.commit_stream_publisher);
+        let commit_log = RaftLog::new(config.logger.clone(), config.commit_log, config.commit_stream_publisher);
 
         Replica {
             my_replica_id,
@@ -71,6 +73,7 @@ where
             election_state,
             commit_log,
             actor_client: config.actor_client,
+            logger: config.logger,
         }
     }
 
@@ -222,7 +225,13 @@ where
                     .election_state
                     .add_received_vote_if_candidate(input.term, input.peer_id);
                 let received_majority = 2 * votes_received / self.cluster_members.quorum_size() >= 1;
-                println!("Received {} votes!! Majority? {}", votes_received, received_majority);
+                slog::info!(
+                    self.logger,
+                    "Received {}/{} votes. Majority? {}",
+                    votes_received,
+                    self.cluster_members.quorum_size(),
+                    received_majority
+                );
                 if received_majority {
                     self.election_state.transition_to_leader_if_not();
                     // No need to set heartbeat immediately. We spawn a heartbeat timer that will
@@ -238,7 +247,9 @@ where
                 }
 
                 if let Some(peer) = self.cluster_members.peer(&input.peer_id) {
+                    // TODO:1.5 add RequestId to remote call
                     tokio::task::spawn(Self::call_peer_request_vote(
+                        self.logger.clone(),
                         peer.client.clone(),
                         peer.metadata.replica_id().clone(),
                         self.new_request_vote_request(input.term),
@@ -246,7 +257,11 @@ where
                         input.term,
                     ));
                 } else {
-                    println!("Peer not found while retrying RequestVote. Wtf!")
+                    slog::warn!(
+                        self.logger,
+                        "Peer {:?} not found while retrying RequestVote. Wtf!",
+                        input.peer_id
+                    );
                 }
             }
         }
@@ -354,7 +369,7 @@ where
     }
 
     pub fn append_entries_result_from_peer(&mut self, input: AppendEntriesResultFromPeerInput) {
-        println!("AppendEntries result: {:?}", input);
+        slog::info!(self.logger, "AppendEntries result: {:?}", input);
 
         // let appended_index = Index::new(1);
         // self.commit_log.ratchet_fwd_commit_index(appended_index);
@@ -426,7 +441,9 @@ where
         self.election_state.transition_to_candidate(new_term);
 
         for peer in self.cluster_members.iter_peers() {
+            // TODO:1.5 add RequestId to remote call
             tokio::task::spawn(Self::call_peer_request_vote(
+                self.logger.clone(),
                 peer.client.clone(),
                 peer.metadata.replica_id().clone(),
                 self.new_request_vote_request(new_term),
@@ -451,6 +468,7 @@ where
     }
 
     async fn call_peer_request_vote(
+        logger: slog::Logger,
         mut peer_client: RaftClient,
         peer_id: ReplicaId,
         request: ProtoRequestVoteReq,
@@ -470,7 +488,7 @@ where
                 }
                 Some(proto_request_vote_result::Result::Err(err)) => match err.err {
                     Some(proto_request_vote_error::Err::ServerFault(fault)) => {
-                        println!("RequestVote Service Fault: {:?}", fault.message);
+                        slog::warn!(logger, "RequestVote Service Fault: {:?}", fault.message);
                         RequestVoteResult::RetryableFailure
                     }
                     None => RequestVoteResult::MalformedReply,
@@ -478,7 +496,7 @@ where
                 None => RequestVoteResult::MalformedReply,
             },
             Err(rpc_status) => {
-                println!("Unmodeled failure from RequestVote RPC call: {:?}", rpc_status);
+                slog::warn!(logger, "Un-modeled failure from RequestVote RPC call: {:?}", rpc_status);
                 RequestVoteResult::RetryableFailure
             }
         };

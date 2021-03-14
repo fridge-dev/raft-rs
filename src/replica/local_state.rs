@@ -1,4 +1,5 @@
 use crate::replica::peers::ReplicaId;
+use std::fmt;
 use std::sync::Arc;
 
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
@@ -15,6 +16,12 @@ impl Term {
 
     pub fn incr(&mut self) {
         self.0 += 1;
+    }
+}
+
+impl fmt::Display for Term {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

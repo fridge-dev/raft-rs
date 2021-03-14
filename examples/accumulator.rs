@@ -1,10 +1,16 @@
+use chrono::Utc;
+use slog::Drain;
+use std::fs::OpenOptions;
 use std::net::Ipv4Addr;
 use tokio;
 
 #[tokio::main]
 async fn main() {
     let cluster = fake_cluster();
-    let mut server = accumulator_impl::Accumulator::setup(cluster).await.expect("WTF");
+    let logger = create_root_logger_for_stdout(cluster.my_replica_id.clone());
+    let mut server = accumulator_impl::Accumulator::setup(cluster, logger)
+        .await
+        .expect("WTF");
 
     assert_eq!(100, server.add("k1".into(), 100).await.unwrap());
     assert_eq!(100, server.add("k2".into(), 100).await.unwrap());
@@ -49,6 +55,33 @@ fn fake_cluster() -> raft::ClusterInfo {
     }
 }
 
+#[allow(dead_code)]
+fn create_root_logger_for_file(directory_prefix: String, replica_id: String) -> slog::Logger {
+    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    let log_path = format!("{}/info_log_{}/{}_info.log", directory_prefix, replica_id, now);
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log_path)
+        .unwrap();
+
+    let decorator = slog_term::PlainDecorator::new(file);
+    let drain = slog_term::FullFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+
+    slog::Logger::root(drain, slog::o!())
+}
+
+#[allow(dead_code)]
+fn create_root_logger_for_stdout(replica_id: String) -> slog::Logger {
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::FullFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+
+    slog::Logger::root(drain, slog::o!("ReplicaId" => replica_id))
+}
+
 mod accumulator_impl {
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use std::collections::HashMap;
@@ -62,9 +95,10 @@ mod accumulator_impl {
     }
 
     impl Accumulator {
-        pub async fn setup(cluster_info: raft::ClusterInfo) -> Result<Self, Box<dyn Error>> {
+        pub async fn setup(cluster_info: raft::ClusterInfo, logger: slog::Logger) -> Result<Self, Box<dyn Error>> {
             let client = raft::create_raft_client(raft::RaftClientConfig {
-                log_directory: "/raft/".to_string(),
+                commit_log_directory: "/raft".to_string(),
+                info_logger: logger,
                 cluster_info,
                 leader_heartbeat_duration: Duration::from_millis(100),
                 follower_min_timeout: Duration::from_millis(500),

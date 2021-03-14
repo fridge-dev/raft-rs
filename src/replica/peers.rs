@@ -1,6 +1,7 @@
 use crate::replica::peer_client::RaftClient;
 use std::collections::hash_map::Values;
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::Hash;
 use std::net::Ipv4Addr;
 use tonic::codegen::http::uri;
@@ -17,6 +18,12 @@ impl ReplicaId {
 
     pub fn into_inner(self) -> String {
         self.0
+    }
+}
+
+impl fmt::Display for ReplicaId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -63,7 +70,8 @@ pub struct PeerTracker {
 }
 
 impl PeerTracker {
-    pub async fn create_valid_cluster(
+    pub async fn create_valid_peer_tracker(
+        logger: slog::Logger,
         my_replica_metadata: ReplicaMetadata,
         peer_replica_metadata: Vec<ReplicaMetadata>,
     ) -> Result<Self, InvalidCluster> {
@@ -74,7 +82,7 @@ impl PeerTracker {
             return Err(InvalidCluster::DuplicateReplicaId(my_replica_metadata.id.into_inner()));
         }
 
-        let peers = PeerTracker::create_peers(cluster_members_by_id).await?;
+        let peers = PeerTracker::create_peers(logger, cluster_members_by_id).await?;
 
         Ok(PeerTracker {
             my_replica_metadata,
@@ -83,19 +91,24 @@ impl PeerTracker {
     }
 
     async fn create_peers(
+        logger: slog::Logger,
         cluster_members_by_id: HashMap<ReplicaId, ReplicaMetadata>,
     ) -> Result<HashMap<ReplicaId, Peer>, InvalidCluster> {
         let mut peers: HashMap<ReplicaId, Peer> = HashMap::with_capacity(cluster_members_by_id.len());
         for (peer_replica_id, peer_md) in cluster_members_by_id.into_iter() {
-            let peer = Self::make_peer(peer_md).await?;
+            let peer = Self::make_peer(logger.clone(), peer_md).await?;
             peers.insert(peer_replica_id, peer);
         }
         Ok(peers)
     }
 
-    async fn make_peer(peer_md: ReplicaMetadata) -> Result<Peer, InvalidCluster> {
+    async fn make_peer(logger: slog::Logger, peer_md: ReplicaMetadata) -> Result<Peer, InvalidCluster> {
+        let peer_client_logger = logger.new(slog::o!(
+            "RemoteReplicaId" => peer_md.id.clone().into_inner(),
+            "RemoteIpAddr" => format!("{}:{}", peer_md.ip, peer_md.port),
+        ));
         let uri = Self::make_uri(peer_md.ip, peer_md.port)?;
-        let client = RaftClient::new(uri).await;
+        let client = RaftClient::new(peer_client_logger, uri).await;
         Ok(Peer {
             metadata: peer_md,
             client,
