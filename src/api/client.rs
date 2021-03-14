@@ -103,7 +103,7 @@ impl ReplicatedLog {
         let replica_input = replica::EnqueueForReplicationInput { data: input.data };
 
         self.actor_client
-            .write_to_log(replica_input)
+            .enqueue_for_replication(replica_input)
             .await
             .map(|o| StartReplicationOutput {
                 key: EntryKey {

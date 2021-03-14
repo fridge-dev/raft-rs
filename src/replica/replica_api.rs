@@ -96,7 +96,7 @@ pub struct TermOutOfDateInfo {
 }
 
 #[derive(Debug)]
-pub struct RequestVoteResultFromPeerInput {
+pub struct RequestVoteReplyFromPeer {
     pub peer_id: ReplicaId,
     pub term: Term,
     pub result: RequestVoteResult,
@@ -111,7 +111,7 @@ pub enum RequestVoteResult {
 }
 
 #[derive(Debug)]
-pub struct AppendEntriesResultFromPeerInput {
+pub struct AppendEntriesReplyFromPeer {
     pub peer_id: ReplicaId,
     // TODO:1 more sophisticated err handle
     pub fail: bool,

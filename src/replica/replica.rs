@@ -11,9 +11,9 @@ use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peer_client::RaftClient;
 use crate::replica::peers::{PeerTracker, ReplicaId};
 use crate::replica::replica_api::{
-    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesResultFromPeerInput,
+    AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesReplyFromPeer,
     EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, RequestVoteError,
-    RequestVoteInput, RequestVoteOutput, RequestVoteResultFromPeerInput, TermOutOfDateInfo,
+    RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
 };
 use crate::replica::RequestVoteResult;
 use std::cmp;
@@ -77,7 +77,7 @@ where
         }
     }
 
-    pub fn enqueue_for_replication(
+    pub fn handle_enqueue_for_replication(
         &mut self,
         input: EnqueueForReplicationInput,
     ) -> Result<EnqueueForReplicationOutput, EnqueueForReplicationError> {
@@ -121,7 +121,7 @@ where
         })
     }
 
-    pub fn handle_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError> {
+    pub fn server_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError> {
         // Ensure candidate is known member.
         if !self.cluster_members.contains_member(&input.candidate_id) {
             return Err(RequestVoteError::CandidateNotInCluster);
@@ -219,25 +219,25 @@ where
         }
     }
 
-    pub fn request_vote_result_from_peer(&mut self, input: RequestVoteResultFromPeerInput) {
-        match input.result {
+    pub fn handle_request_vote_reply_from_peer(&mut self, reply: RequestVoteReplyFromPeer) {
+        match reply.result {
             RequestVoteResult::VoteGranted => {
                 let votes_received = self
                     .election_state
-                    .add_received_vote_if_candidate(input.term, input.peer_id);
+                    .add_received_vote_if_candidate(reply.term, reply.peer_id);
                 if votes_received > 0 {
                     slog::info!(
                         self.logger,
                         "Received {}/{} votes for term {}",
                         votes_received,
                         self.cluster_members.quorum_size(),
-                        input.term,
+                        reply.term,
                     );
                 } else {
                     slog::info!(
                         self.logger,
                         "Received vote for term {}, but we're no longer a candidate for that term.",
-                        input.term,
+                        reply.term,
                     )
                 }
 
@@ -253,25 +253,25 @@ where
                 // No action
             }
             RequestVoteResult::RetryableFailure | RequestVoteResult::MalformedReply => {
-                if !self.election_state.is_election_open(input.term) {
+                if !self.election_state.is_election_open(reply.term) {
                     return;
                 }
 
-                if let Some(peer) = self.cluster_members.peer(&input.peer_id) {
+                if let Some(peer) = self.cluster_members.peer(&reply.peer_id) {
                     // TODO:1.5 add RequestId to remote call
                     tokio::task::spawn(Self::call_peer_request_vote(
                         self.logger.clone(),
                         peer.client.clone(),
                         peer.metadata.replica_id().clone(),
-                        self.new_request_vote_request(input.term),
+                        self.new_request_vote_request(reply.term),
                         self.actor_client.clone(),
-                        input.term,
+                        reply.term,
                     ));
                 } else {
                     slog::warn!(
                         self.logger,
                         "Peer {:?} not found while retrying RequestVote. Wtf!",
-                        input.peer_id
+                        reply.peer_id
                     );
                 }
             }
@@ -313,6 +313,7 @@ where
         }
 
         // Reset follower timeout.
+        // TODO:2 add logical clock to track if we receive a stale timer event.
         self.election_state.reset_timeout_if_follower();
 
         // 2. Reply false if [my] log doesn't contain an entry at [leader's]
@@ -388,15 +389,15 @@ where
         return output;
     }
 
-    pub fn append_entries_result_from_peer(&mut self, input: AppendEntriesResultFromPeerInput) {
-        slog::info!(self.logger, "AppendEntries result: {:?}", input);
+    pub fn handle_append_entries_reply_from_peer(&mut self, reply: AppendEntriesReplyFromPeer) {
+        slog::info!(self.logger, "AppendEntries result: {:?}", reply);
 
         // let appended_index = Index::new(1);
         // self.commit_log.ratchet_fwd_commit_index(appended_index);
         // self.commit_log.apply_all_committed_entries();
     }
 
-    pub fn leader_timer(&mut self) {
+    pub fn handle_leader_timer(&mut self) {
         // Check still leader
         if self.election_state.current_leader() != CurrentLeader::Me {
             return;
@@ -416,7 +417,7 @@ where
         let current_term = self.local_state.current_term().into_inner();
         let commit_index = self.commit_log.commit_index().val();
         let (previous_log_entry_term, previous_log_entry_index) = match self.commit_log.latest_entry() {
-            None => (1, 1), // TODO:1 resolve hack
+            None => (1, 1), // TODO:1 resolve hack START HERE
             Some((term, idx)) => (term.into_inner(), idx.val()),
         };
 
@@ -451,12 +452,12 @@ where
             Err(_) => true,
         };
 
-        let callback_input = AppendEntriesResultFromPeerInput { peer_id, fail };
+        let callback_input = AppendEntriesReplyFromPeer { peer_id, fail };
 
-        callback.append_entries_result_from_peer(callback_input).await;
+        callback.notify_append_entries_reply_from_peer(callback_input).await;
     }
 
-    pub fn follower_timeout(&mut self) {
+    pub fn handle_follower_timeout(&mut self) {
         let new_term = self.local_state.increment_term_and_vote_for_self();
         self.election_state.transition_to_candidate(new_term);
         slog::info!(self.logger, "Election state: {:?}", self.election_state);
@@ -522,12 +523,12 @@ where
             }
         };
 
-        let callback_input = RequestVoteResultFromPeerInput {
+        let callback_input = RequestVoteReplyFromPeer {
             peer_id,
             term,
             result: callback_result,
         };
 
-        callback.request_vote_result_from_peer(callback_input).await;
+        callback.notify_request_vote_reply_from_peer(callback_input).await;
     }
 }

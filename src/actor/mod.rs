@@ -8,16 +8,12 @@ use tokio::sync::{mpsc, oneshot};
 
 // v1 Design choice: Disk interaction will be synchronous. Future improvement: There should be a
 //                   Disk Actor.
-//
-// v1 Design choice: Raft lib will contain application state machine. Future improvement: We should
-//                   just send to a channel, where the app has the receiver and applies to state
-//                   machine.
 #[derive(Debug)]
 pub enum Event {
     // Leader: Write to disk, locally buffer entry to be replicated later. Also stores callback.
     // Candidate: Reject request.
     // Follower: Redirect.
-    WriteToLog(
+    EnqueueForReplication(
         replica::EnqueueForReplicationInput,
         Callback<replica::EnqueueForReplicationOutput, replica::EnqueueForReplicationError>,
     ),
@@ -33,7 +29,7 @@ pub enum Event {
     // Leader: discard
     // Candidate: Update local state. Transition to leader if quorum vote.
     // Follower: discard
-    RequestVoteResultFromPeer(replica::RequestVoteResultFromPeerInput),
+    RequestVoteReplyFromPeer(replica::RequestVoteReplyFromPeer),
 
     // Leader: Transition to follower if applicable. Clean up log. Respond to request.
     // Candidate: Transition to follower if applicable. Clean up log. Respond to request.
@@ -46,7 +42,7 @@ pub enum Event {
     // Leader: Update local state tracking each entry's replication progress. If committed, apply to state machine and send response to WTL client.
     // Candidate: discard
     // Follower: discard
-    AppendEntriesResultFromPeer(replica::AppendEntriesResultFromPeerInput),
+    AppendEntriesReplyFromPeer(replica::AppendEntriesReplyFromPeer),
 
     // Thought: Separate channel for timer/heartbeat events?
     // Thought: Combine heartbeat timer into single timer? Take different action based on state?
@@ -87,12 +83,13 @@ impl ActorClient {
         ActorClient { sender }
     }
 
-    pub async fn write_to_log(
+    pub async fn enqueue_for_replication(
         &self,
         input: replica::EnqueueForReplicationInput,
     ) -> Result<replica::EnqueueForReplicationOutput, replica::EnqueueForReplicationError> {
         let (tx, rx) = oneshot::channel();
-        self.send(Event::WriteToLog(input, Callback(tx))).await;
+        self.send_to_actor(Event::EnqueueForReplication(input, Callback(tx)))
+            .await;
 
         rx.await
             .expect("Raft replica event loop actor dropped our channel. WTF!")
@@ -103,14 +100,14 @@ impl ActorClient {
         input: replica::RequestVoteInput,
     ) -> Result<replica::RequestVoteOutput, replica::RequestVoteError> {
         let (tx, rx) = oneshot::channel();
-        self.send(Event::RequestVote(input, Callback(tx))).await;
+        self.send_to_actor(Event::RequestVote(input, Callback(tx))).await;
 
         rx.await
             .expect("Raft replica event loop actor dropped our channel. WTF!")
     }
 
-    pub async fn request_vote_result_from_peer(&self, input: replica::RequestVoteResultFromPeerInput) {
-        self.send(Event::RequestVoteResultFromPeer(input)).await;
+    pub async fn notify_request_vote_reply_from_peer(&self, reply: replica::RequestVoteReplyFromPeer) {
+        self.send_to_actor(Event::RequestVoteReplyFromPeer(reply)).await;
     }
 
     pub async fn append_entries(
@@ -118,25 +115,25 @@ impl ActorClient {
         input: replica::AppendEntriesInput,
     ) -> Result<replica::AppendEntriesOutput, replica::AppendEntriesError> {
         let (tx, rx) = oneshot::channel();
-        self.send(Event::AppendEntries(input, Callback(tx))).await;
+        self.send_to_actor(Event::AppendEntries(input, Callback(tx))).await;
 
         rx.await
             .expect("Raft replica event loop actor dropped our channel. WTF!")
     }
 
-    pub async fn append_entries_result_from_peer(&self, input: replica::AppendEntriesResultFromPeerInput) {
-        self.send(Event::AppendEntriesResultFromPeer(input)).await;
+    pub async fn notify_append_entries_reply_from_peer(&self, reply: replica::AppendEntriesReplyFromPeer) {
+        self.send_to_actor(Event::AppendEntriesReplyFromPeer(reply)).await;
     }
 
     pub async fn leader_timer(&self) {
-        self.send(Event::LeaderTimer).await;
+        self.send_to_actor(Event::LeaderTimer).await;
     }
 
     pub async fn follower_timeout(&self) {
-        self.send(Event::FollowerTimeout).await;
+        self.send_to_actor(Event::FollowerTimeout).await;
     }
 
-    async fn send(&self, event: Event) {
+    async fn send_to_actor(&self, event: Event) {
         self.sender
             .send(event)
             .await
@@ -170,7 +167,7 @@ where
 
     pub async fn run_event_loop(mut self) {
         while let Some(event) = self.receiver.recv().await {
-            slog::debug!(self.logger, "Received: {:?}", event);
+            slog::trace!(self.logger, "Received: {:?}", event);
             self.handle_event(event);
         }
     }
@@ -179,31 +176,30 @@ where
     // and/or come as a callback to this actor.
     fn handle_event(&mut self, event: Event) {
         match event {
-            Event::WriteToLog(input, callback) => {
+            Event::EnqueueForReplication(input, callback) => {
                 // Need to pass callback into replica.
-                let result = self.replica.enqueue_for_replication(input);
+                let result = self.replica.handle_enqueue_for_replication(input);
                 callback.send(result);
             }
             Event::RequestVote(input, callback) => {
-                let result = self.replica.handle_request_vote(input);
+                let result = self.replica.server_request_vote(input);
                 callback.send(result);
             }
-            // TODO:1 revisit naming for consistency. Base name should have {name}Input, {name}Output, {name}Error, handle_{name}, etc.
-            Event::RequestVoteResultFromPeer(input) => {
-                self.replica.request_vote_result_from_peer(input);
+            Event::RequestVoteReplyFromPeer(reply) => {
+                self.replica.handle_request_vote_reply_from_peer(reply);
             }
             Event::AppendEntries(input, callback) => {
                 let result = self.replica.handle_append_entries(input);
                 callback.send(result);
             }
-            Event::AppendEntriesResultFromPeer(input) => {
-                self.replica.append_entries_result_from_peer(input);
+            Event::AppendEntriesReplyFromPeer(reply) => {
+                self.replica.handle_append_entries_reply_from_peer(reply);
             }
             Event::LeaderTimer => {
-                self.replica.leader_timer();
+                self.replica.handle_leader_timer();
             }
             Event::FollowerTimeout => {
-                self.replica.follower_timeout();
+                self.replica.handle_follower_timeout();
             }
         }
     }
