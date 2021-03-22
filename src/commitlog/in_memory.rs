@@ -25,7 +25,7 @@ impl<E: Entry> InMemoryLog<E> {
 
     fn vec_index(index: Index) -> usize {
         // Log API states that Index starts from 1.
-        (index.val() - 1) as usize
+        (index.as_u64() - 1) as usize
     }
 }
 

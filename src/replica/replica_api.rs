@@ -38,8 +38,7 @@ pub enum EnqueueForReplicationError {
 pub struct RequestVoteInput {
     pub candidate_term: Term,
     pub candidate_id: ReplicaId,
-    pub candidate_last_log_entry_index: Index,
-    pub candidate_last_log_entry_term: Term,
+    pub candidate_last_log_entry: Option<(Term, Index)>,
 }
 
 #[derive(Debug)]
@@ -59,12 +58,45 @@ pub enum RequestVoteError {
 pub struct AppendEntriesInput {
     pub leader_term: Term,
     pub leader_id: ReplicaId,
-    pub leader_commit_index: Index,
+    pub leader_log_state: LeaderLogState,
     pub new_entries: Vec<AppendEntriesLogEntry>,
-    // > index of log entry immediately preceding new ones
-    // TODO:1 make prev entry optional for fresh log case
-    pub leader_previous_log_entry_index: Index, // TODO:2 this is type from commitlog crate. Bad abstraction.
-    pub leader_previous_log_entry_term: Term,
+}
+
+// This is essentially a matrix of optional prev entry and optional commit index, but removes
+// the impossibility of Some(commit index) and None(prev entry). This changes an application layer
+// panic to an RPC layer InvalidArgument response. The variant names can probably be better :P.
+#[derive(Debug, Copy, Clone)]
+pub enum LeaderLogState {
+    Empty,
+    NoCommit {
+        previous_log_entry_term: Term,
+        // TODO:2 this is type from commitlog crate. Bad abstraction.
+        previous_log_entry_index: Index,
+    },
+    Normal {
+        previous_log_entry_term: Term,
+        // TODO:2 this is type from commitlog crate. Bad abstraction.
+        previous_log_entry_index: Index,
+        commit_index: Index,
+    },
+}
+
+impl LeaderLogState {
+    // "Previous log entry" is the log entry immediately preceding the new ones in AppendEntriesInput.
+    pub fn previous_log_entry(&self) -> Option<(Term, Index)> {
+        match self {
+            LeaderLogState::Empty => None,
+            LeaderLogState::NoCommit {
+                previous_log_entry_term,
+                previous_log_entry_index,
+            } => Some((*previous_log_entry_term, *previous_log_entry_index)),
+            LeaderLogState::Normal {
+                previous_log_entry_term,
+                previous_log_entry_index,
+                ..
+            } => Some((*previous_log_entry_term, *previous_log_entry_index)),
+        }
+    }
 }
 
 #[derive(Debug)]

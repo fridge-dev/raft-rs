@@ -8,7 +8,7 @@ use tonic::codegen::http::uri;
 
 /// ReplicaId is kind of like NodeId or ServerId. It is the ID of the entity participating in the
 /// replication cluster.
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 pub struct ReplicaId(String);
 
 impl ReplicaId {
@@ -21,7 +21,7 @@ impl ReplicaId {
     }
 }
 
-impl fmt::Display for ReplicaId {
+impl fmt::Debug for ReplicaId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }

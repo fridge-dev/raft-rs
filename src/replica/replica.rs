@@ -15,7 +15,7 @@ use crate::replica::replica_api::{
     EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, RequestVoteError,
     RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
 };
-use crate::replica::RequestVoteResult;
+use crate::replica::{LeaderLogState, RequestVoteResult};
 use std::cmp;
 use tokio::time::Duration;
 
@@ -128,10 +128,11 @@ where
         }
 
         // Read our local term/vote state as 1 atomic action.
-        let (current_term, opt_voted_for) = self.local_state.voted_for_current_term();
+        let (current_term, mut opt_voted_for) = self.local_state.voted_for_current_term();
 
         // 1. Reply false if term < currentTerm (§5.1)
         if input.candidate_term < current_term {
+            slog::info!(self.logger, "Not granting vote. Client term is out of date.");
             return Err(RequestVoteError::RequestTermOutOfDate(TermOutOfDateInfo {
                 current_term,
             }));
@@ -142,7 +143,13 @@ where
         let increased = self.local_state.store_term_if_increased(input.candidate_term);
         if increased {
             self.election_state.transition_to_follower(None);
-            slog::info!(self.logger, "Election state: {:?}", self.election_state);
+            slog::info!(
+                self.logger,
+                "Observed increased term in RequestVote call. Transitioning to follower. Election state: {:?}",
+                self.election_state
+            );
+            // If we've increased the term, it means we haven't voted for anyone this term, and we will vote for the client.
+            opt_voted_for = None;
         }
 
         // 2. If votedFor is null or candidateId, and candidate’s log is at
@@ -155,14 +162,13 @@ where
         };
         let already_voted_for_someone_else = !can_vote_for_candidate;
         if already_voted_for_someone_else {
+            slog::info!(self.logger, "Not granting vote. We already voted for someone else.");
             return Ok(RequestVoteOutput { vote_granted: false });
         }
 
         // ...and candidate’s log is at least as up-to-date as receiver’s log...
-        if !self.is_candidate_more_up_to_date_than_me(
-            input.candidate_last_log_entry_term,
-            input.candidate_last_log_entry_index,
-        ) {
+        if !self.is_candidate_log_gte_mine(input.candidate_last_log_entry) {
+            slog::info!(self.logger, "Not granting vote. Candidate log is out of date.");
             return Ok(RequestVoteOutput { vote_granted: false });
         }
 
@@ -192,6 +198,7 @@ where
 
         // If current state doesn't exactly match this request, for whatever
         // reason, don't grant vote.
+        slog::info!(self.logger, "Not granting vote because idk why.");
         Ok(RequestVoteOutput { vote_granted: false })
     }
 
@@ -201,21 +208,23 @@ where
     // > the log with the later term is more up-to-date. If the logs
     // > end with the same term, then whichever log is longer is
     // > more up-to-date.
-    fn is_candidate_more_up_to_date_than_me(
-        &self,
-        candidate_last_entry_term: Term,
-        candidate_last_entry_index: Index,
-    ) -> bool {
-        if let Some((my_last_entry_term, my_last_entry_index)) = self.commit_log.latest_entry() {
-            if candidate_last_entry_term > my_last_entry_term {
-                return true;
-            } else if candidate_last_entry_term < my_last_entry_term {
-                return false;
-            }
+    fn is_candidate_log_gte_mine(&self, candidate_last_entry: Option<(Term, Index)>) -> bool {
+        match (self.commit_log.latest_entry(), candidate_last_entry) {
+            (None, None) => true,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+            (
+                Some((my_last_entry_term, my_last_entry_index)),
+                Some((candidate_last_entry_term, candidate_last_entry_index)),
+            ) => {
+                if candidate_last_entry_term > my_last_entry_term {
+                    return true;
+                } else if candidate_last_entry_term < my_last_entry_term {
+                    return false;
+                }
 
-            candidate_last_entry_index > my_last_entry_index
-        } else {
-            true
+                candidate_last_entry_index >= my_last_entry_index
+            }
         }
     }
 
@@ -228,7 +237,7 @@ where
                 if votes_received > 0 {
                     slog::info!(
                         self.logger,
-                        "Received {}/{} votes for term {}",
+                        "Received {}/{} votes for term {:?}",
                         votes_received,
                         self.cluster_members.quorum_size(),
                         reply.term,
@@ -236,7 +245,7 @@ where
                 } else {
                     slog::info!(
                         self.logger,
-                        "Received vote for term {}, but we're no longer a candidate for that term.",
+                        "Received vote for term {:?}, but we're no longer a candidate for that term.",
                         reply.term,
                     )
                 }
@@ -318,28 +327,31 @@ where
 
         // 2. Reply false if [my] log doesn't contain an entry at [leader's]
         // prevLogIndex whose term matches [leader's] prevLogTerm (§5.3)
-        // TODO:2 readability improvement
-        let me_missing_entry = match self.commit_log.read(input.leader_previous_log_entry_index) {
-            Ok(Some(my_previous_log_entry)) => Ok(my_previous_log_entry.term != input.leader_previous_log_entry_term),
-            Ok(None) => Ok(true),
-            Err(e) => Err(AppendEntriesError::ServerIoError(e)),
-        }?;
-        if me_missing_entry {
-            return Err(AppendEntriesError::ServerMissingPreviousLogEntry);
+        if let Some((leader_prev_entry_term, leader_prev_entry_index)) = input.leader_log_state.previous_log_entry() {
+            match self.commit_log.read(leader_prev_entry_index) {
+                Ok(Some(my_previous_log_entry)) => {
+                    if my_previous_log_entry.term != leader_prev_entry_term {
+                        return Err(AppendEntriesError::ServerMissingPreviousLogEntry);
+                    }
+                }
+                Ok(None) => return Err(AppendEntriesError::ServerMissingPreviousLogEntry),
+                Err(e) => return Err(AppendEntriesError::ServerIoError(e)),
+            };
         }
 
-        // 3. If [my] existing entry conflicts with [leader's] (same index
-        // but different terms), delete [my] existing entry and all that
-        // follow it (§5.3)
+        // 3. If [my] existing entry conflicts with [leader's new entries]
+        // (same index but different terms), delete [my] existing entry and
+        // all that follow it (§5.3)
         // 4. Append any new entries not already in the log
-        let mut new_entry_index = input.leader_previous_log_entry_index;
+        let mut next_entry_index = match input.leader_log_state.previous_log_entry() {
+            None => Index::start_index(),
+            Some((_, leader_prev_entry_index)) => leader_prev_entry_index.plus(1),
+        };
         for new_entry in input.new_entries.iter() {
-            new_entry_index.incr(1);
-
-            // TODO:2 optimize read to not happen if we know we've truncated log in a previous iteration.
+            // TODO:2 optimize read to not happen if we know we've truncated log in a previous iteration, or if we're missing an entry from a previous iteration.
             let opt_existing_entry = self
                 .commit_log
-                .read(new_entry_index)
+                .read(next_entry_index)
                 .map_err(|e| AppendEntriesError::ServerIoError(e))?;
 
             // 3. (if...)
@@ -350,34 +362,44 @@ where
                 } else {
                     // 3. (delete)
                     self.commit_log
-                        .truncate(new_entry_index)
+                        .truncate(next_entry_index)
                         .map_err(|e| AppendEntriesError::ServerIoError(e))?;
                 }
             }
 
             // 4. (append)
-            self.commit_log
+            let appended_index = self
+                .commit_log
                 .append(RaftCommitLogEntry {
                     term: new_entry.term,
                     data: new_entry.data.to_vec(),
                 })
                 .map_err(|e| AppendEntriesError::ServerIoError(e))?;
+            assert_eq!(
+                appended_index, next_entry_index,
+                "Appended log entry to unexpected index."
+            );
+
+            next_entry_index = next_entry_index.plus(1);
         }
 
-        // 5. If leaderCommit > commitIndex, set commitIndex =
-        // min(leaderCommit, index of last new entry)
-        if input.leader_commit_index > self.commit_log.commit_index() {
-            // TODO:2 wtf to do if entries was empty?? Paper doesn't state this. Formal spec probably does though.
-            //        For now, assuming it's safe to update. Eventually, read spec to confirm.
-            //        Being pragmatic: Leader could say their commit index is N+1 despite they've only replicated
-            //        indexes [_, N] to us. In which case, we should only mark N as committed and wait until we
-            //        get sent N+1. If entries are missing, then make sure to not increment commit index
-            //        past what we have received. Even though that should never happen?
-            let last_index_from_current_leader = input
-                .leader_previous_log_entry_index
-                .plus(input.new_entries.len() as u64);
-            let new_commit_index = cmp::min(input.leader_commit_index, last_index_from_current_leader);
-            self.commit_log.ratchet_fwd_commit_index(new_commit_index);
+        // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+        //v3
+        match input.leader_log_state {
+            LeaderLogState::Normal {
+                previous_log_entry_index,
+                commit_index,
+                ..
+            } => {
+                let index_of_last_new_entry = previous_log_entry_index.plus(input.new_entries.len() as u64);
+                let new_commit_index = cmp::min(commit_index, index_of_last_new_entry);
+                self.commit_log.ratchet_fwd_commit_index(new_commit_index);
+            }
+            LeaderLogState::Empty | LeaderLogState::NoCommit { .. } => {
+                if let Some(my_commit_index) = self.commit_log.commit_index() {
+                    panic!("My commit index ({:?}) is non-0 but leader ({:?})'s commit index is 0. This should be impossible.", my_commit_index, input.leader_id);
+                }
+            }
         }
 
         let output = Ok(AppendEntriesOutput {});
@@ -414,11 +436,14 @@ where
     }
 
     fn new_append_entries_request(&self) -> ProtoAppendEntriesReq {
-        let current_term = self.local_state.current_term().into_inner();
-        let commit_index = self.commit_log.commit_index().val();
+        let current_term = self.local_state.current_term().as_u64();
+        let commit_index = match self.commit_log.commit_index() {
+            None => 0,
+            Some(ci) => ci.as_u64(),
+        };
         let (previous_log_entry_term, previous_log_entry_index) = match self.commit_log.latest_entry() {
-            None => (1, 1), // TODO:1 resolve hack START HERE
-            Some((term, idx)) => (term.into_inner(), idx.val()),
+            None => (0, 0),
+            Some((term, idx)) => (term.as_u64(), idx.as_u64()),
         };
 
         // TODO:1 Add locally buffered entries. For now, we're just doing empty heartbeats.
@@ -460,7 +485,11 @@ where
     pub fn handle_follower_timeout(&mut self) {
         let new_term = self.local_state.increment_term_and_vote_for_self();
         self.election_state.transition_to_candidate(new_term);
-        slog::info!(self.logger, "Election state: {:?}", self.election_state);
+        slog::info!(
+            self.logger,
+            "Timed out as follower. Changing to candidate. Election state: {:?}",
+            self.election_state
+        );
 
         for peer in self.cluster_members.iter_peers() {
             // TODO:1.5 add RequestId to remote call
@@ -478,12 +507,12 @@ where
     fn new_request_vote_request(&self, term: Term) -> ProtoRequestVoteReq {
         let (last_log_entry_term, last_log_entry_index) = match self.commit_log.latest_entry() {
             None => (0, 0),
-            Some((term, index)) => (term.into_inner(), index.val()),
+            Some((term, index)) => (term.as_u64(), index.as_u64()),
         };
 
         ProtoRequestVoteReq {
             client_node_id: self.my_replica_id.clone().into_inner(),
-            term: term.into_inner(),
+            term: term.as_u64(),
             last_log_entry_index,
             last_log_entry_term,
         }

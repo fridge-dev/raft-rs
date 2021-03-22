@@ -2,7 +2,7 @@ use crate::replica::peers::ReplicaId;
 use std::fmt;
 use std::sync::Arc;
 
-#[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
+#[derive(Copy, Clone, PartialOrd, PartialEq)]
 pub struct Term(u64);
 
 impl Term {
@@ -10,7 +10,7 @@ impl Term {
         Term(term)
     }
 
-    pub fn into_inner(self) -> u64 {
+    pub fn as_u64(&self) -> u64 {
         self.0
     }
 
@@ -19,7 +19,7 @@ impl Term {
     }
 }
 
-impl fmt::Display for Term {
+impl fmt::Debug for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }

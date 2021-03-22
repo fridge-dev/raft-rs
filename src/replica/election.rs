@@ -114,11 +114,11 @@ impl fmt::Debug for ElectionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.state {
             State::Leader(_) => write!(f, "Leader"),
-            State::Candidate(cs) => write!(f, "Candidate(Term={})", cs.term),
+            State::Candidate(cs) => write!(f, "Candidate(Term={:?})", cs.term),
             State::Follower(FollowerState {
                 leader_id: Some(leader_id),
                 ..
-            }) => write!(f, "Follower(Leader={})", leader_id),
+            }) => write!(f, "Follower(Leader={:?})", leader_id),
             State::Follower(FollowerState { leader_id: None, .. }) => write!(f, "Follower(Leader=None)"),
         }
     }

@@ -8,8 +8,8 @@ use crate::grpc::{
     ProtoServerMissingPreviousLog,
 };
 use crate::replica::{
-    AppendEntriesError, AppendEntriesInput, AppendEntriesLogEntry, AppendEntriesOutput, ReplicaId, RequestVoteError,
-    RequestVoteInput, RequestVoteOutput, Term,
+    AppendEntriesError, AppendEntriesInput, AppendEntriesLogEntry, AppendEntriesOutput, LeaderLogState, ReplicaId,
+    RequestVoteError, RequestVoteInput, RequestVoteOutput, Term,
 };
 use bytes::Bytes;
 use std::net::SocketAddr;
@@ -45,19 +45,18 @@ impl RpcServer {
         slog::warn!(logger, "Server run() has exited: {:?}", result);
     }
 
-    fn convert_request_vote_input(rpc_request: ProtoRequestVoteReq) -> RequestVoteInput {
-        RequestVoteInput {
+    fn convert_request_vote_input(rpc_request: ProtoRequestVoteReq) -> Result<RequestVoteInput, Status> {
+        let candidate_last_log_entry =
+            Self::convert_log_entry_metadata(rpc_request.last_log_entry_term, rpc_request.last_log_entry_index)?;
+
+        Ok(RequestVoteInput {
             candidate_term: Term::new(rpc_request.term),
             candidate_id: ReplicaId::new(rpc_request.client_node_id),
-            candidate_last_log_entry_index: Index::new(rpc_request.last_log_entry_index),
-            candidate_last_log_entry_term: Term::new(rpc_request.last_log_entry_term),
-        }
+            candidate_last_log_entry,
+        })
     }
 
-    fn convert_request_vote_result(
-        &self,
-        app_result: Result<RequestVoteOutput, RequestVoteError>,
-    ) -> ProtoRequestVoteResult {
+    fn convert_request_vote_result(app_result: Result<RequestVoteOutput, RequestVoteError>) -> ProtoRequestVoteResult {
         match app_result {
             Ok(ok) => ProtoRequestVoteResult {
                 result: Some(proto_request_vote_result::Result::Ok(ProtoRequestVoteSuccess {
@@ -77,7 +76,9 @@ impl RpcServer {
         }
     }
 
-    fn convert_append_entries_input(rpc_request: ProtoAppendEntriesReq) -> AppendEntriesInput {
+    fn convert_append_entries_input(rpc_request: ProtoAppendEntriesReq) -> Result<AppendEntriesInput, Status> {
+        let leader_log_state = RpcServer::convert_leader_log_state(&rpc_request)?;
+
         let mut new_entries = Vec::with_capacity(rpc_request.new_entries.len());
         for proto_entry in rpc_request.new_entries {
             new_entries.push(AppendEntriesLogEntry {
@@ -86,18 +87,55 @@ impl RpcServer {
             })
         }
 
-        AppendEntriesInput {
+        Ok(AppendEntriesInput {
             leader_term: Term::new(rpc_request.term),
             leader_id: ReplicaId::new(rpc_request.client_node_id),
-            leader_commit_index: Index::new(rpc_request.commit_index),
+            leader_log_state,
             new_entries,
-            leader_previous_log_entry_index: Index::new(rpc_request.previous_log_entry_index),
-            leader_previous_log_entry_term: Term::new(rpc_request.previous_log_entry_term),
+        })
+    }
+
+    fn convert_leader_log_state(rpc_request: &ProtoAppendEntriesReq) -> Result<LeaderLogState, Status> {
+        let leader_previous_log_entry = Self::convert_log_entry_metadata(
+            rpc_request.previous_log_entry_term,
+            rpc_request.previous_log_entry_index,
+        )?;
+
+        match (leader_previous_log_entry, rpc_request.commit_index) {
+            (None, 0) => Ok(LeaderLogState::Empty),
+            (Some((previous_log_entry_term, previous_log_entry_index)), 0) => Ok(LeaderLogState::NoCommit {
+                previous_log_entry_term,
+                previous_log_entry_index,
+            }),
+            (Some((previous_log_entry_term, previous_log_entry_index)), commit_index) => Ok(LeaderLogState::Normal {
+                previous_log_entry_term,
+                previous_log_entry_index,
+                commit_index: Index::new(commit_index),
+            }),
+            (None, _) => Err(Status::invalid_argument(
+                "PreviousLogEntry data is 0 and commit index is non-0",
+            )),
+        }
+    }
+
+    fn convert_log_entry_metadata(log_entry_term: u64, log_entry_index: u64) -> Result<Option<(Term, Index)>, Status> {
+        match (log_entry_term, log_entry_index) {
+            (0, 0) => Ok(None),
+            (0, _) => {
+                return Err(Status::invalid_argument(
+                    "PreviousLogEntryTerm 0 and PreviousLogEntryIndex non-0",
+                ))
+            }
+            (_, 0) => {
+                return Err(Status::invalid_argument(
+                    "PreviousLogEntryIndex 0 and PreviousLogEntryTerm non-0",
+                ))
+            }
+            (term, index) => Ok(Some((Term::new(term), Index::new(index)))),
         }
     }
 
     fn convert_append_entries_result(
-        &self,
         app_result: Result<AppendEntriesOutput, AppendEntriesError>,
     ) -> ProtoAppendEntriesResult {
         match app_result {
@@ -122,7 +160,7 @@ impl RpcServer {
             Err(AppendEntriesError::ClientTermOutOfDate(term_info)) => ProtoAppendEntriesResult {
                 result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
                     err: Some(proto_append_entries_error::Err::StaleTerm(ProtoClientStaleTerm {
-                        current_term: term_info.current_term.into_inner(),
+                        current_term: term_info.current_term.as_u64(),
                     })),
                 })),
             },
@@ -154,11 +192,11 @@ impl GrpcRaft for RpcServer {
         &self,
         rpc_request: Request<ProtoRequestVoteReq>,
     ) -> Result<Response<ProtoRequestVoteResult>, Status> {
-        let app_input = Self::convert_request_vote_input(rpc_request.into_inner());
-        slog::debug!(self.logger, "Wire - {:?}", app_input);
+        slog::debug!(self.logger, "Wire - {:?}", rpc_request);
+        let app_input = Self::convert_request_vote_input(rpc_request.into_inner())?;
         let app_result = self.local_replica.request_vote(app_input).await;
-        slog::debug!(self.logger, "Wire - {:?}", app_result);
-        let rpc_reply = self.convert_request_vote_result(app_result);
+        let rpc_reply = Self::convert_request_vote_result(app_result);
+        slog::debug!(self.logger, "Wire - {:?}", rpc_reply);
         Ok(Response::new(rpc_reply))
     }
 
@@ -166,11 +204,11 @@ impl GrpcRaft for RpcServer {
         &self,
         rpc_request: Request<ProtoAppendEntriesReq>,
     ) -> Result<Response<ProtoAppendEntriesResult>, Status> {
-        let app_input = Self::convert_append_entries_input(rpc_request.into_inner());
-        slog::debug!(self.logger, "Wire - {:?}", app_input);
+        slog::debug!(self.logger, "Wire - {:?}", rpc_request);
+        let app_input = Self::convert_append_entries_input(rpc_request.into_inner())?;
         let app_result = self.local_replica.append_entries(app_input).await;
-        slog::debug!(self.logger, "Wire - {:?}", app_result);
-        let rpc_reply = self.convert_append_entries_result(app_result);
+        let rpc_reply = Self::convert_append_entries_result(app_result);
+        slog::debug!(self.logger, "Wire - {:?}", rpc_reply);
         Ok(Response::new(rpc_reply))
     }
 }

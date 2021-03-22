@@ -32,11 +32,10 @@ where
     // Commit stream to publish committed entries to. To be consumed by the application layer to
     // apply committed entries to their state machine.
     commit_stream: api::CommitStreamPublisher,
-    // TODO:1 model as optional.
-    // Index of highest log entry known to be committed.
-    commit_index: Index,
-    // Index of highest log entry applied to state machine.
-    last_applied_index: Index,
+    // Index of highest log entry known to be committed. None if nothing is committed.
+    commit_index: Option<Index>,
+    // Index of highest log entry applied to state machine. None if nothing is applied.
+    last_applied_index: Option<Index>,
 }
 
 impl<L> RaftLog<L>
@@ -45,15 +44,19 @@ where
 {
     pub fn new(logger: slog::Logger, log: L, commit_stream: api::CommitStreamPublisher) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
-        assert_eq!(log.next_index(), Index::new(1));
+        assert_eq!(
+            log.next_index(),
+            Index::new(1),
+            "We only know how to handle initialization of an empty log."
+        );
 
         RaftLog {
             logger,
             log,
             latest_entry_metadata: None,
             commit_stream,
-            commit_index: Index::new(0),
-            last_applied_index: Index::new(0),
+            commit_index: None,
+            last_applied_index: None,
         }
     }
 
@@ -90,24 +93,38 @@ where
         Ok(appended_index)
     }
 
-    pub fn commit_index(&self) -> Index {
+    pub fn commit_index(&self) -> Option<Index> {
         self.commit_index
     }
 
     pub fn ratchet_fwd_commit_index(&mut self, new_commit_index: Index) {
-        if new_commit_index <= self.commit_index {
-            panic!(
-                "ratchet_fwd_commit_index() called with '{:?}' < current commit index {:?}",
-                new_commit_index, self.commit_index
+        // Assert we only ratchet commit index forward.
+        if let Some(current_commit_index) = self.commit_index {
+            assert!(
+                new_commit_index > current_commit_index,
+                "Can't ratchet commit index backwards. Expected [input] {:?} > {:?} [current]",
+                new_commit_index,
+                current_commit_index,
             );
         }
 
-        self.commit_index = new_commit_index;
+        // Assert we only mark as committed if we have the entry locally.
+        let latest_locally_written_index = self
+            .latest_entry_metadata
+            .expect("Can't ratchet commit index forward if we don't have any local logs")
+            .1;
+        assert!(
+            latest_locally_written_index >= new_commit_index,
+            "Can't ratchet commit index forwards past our local log. Expected [latest log] {:?} > {:?} [input]",
+            latest_locally_written_index,
+            new_commit_index,
+        );
+
+        self.commit_index.replace(new_commit_index);
     }
 
     /// apply_all_committed_entries applies all committed but unapplied entries in order.
     pub fn apply_all_committed_entries(&mut self) {
-        // TODO:2 Make infalliable by buffering in memory all of the uncommited entries.
         if let Err(e) = self.try_apply_all_committed_entries() {
             // We've already persisted the log. Applying committed logs is not on critical
             // path. We can wait to retry next time.
@@ -116,29 +133,53 @@ where
     }
 
     fn try_apply_all_committed_entries(&mut self) -> Result<(), io::Error> {
-        while self.last_applied_index < self.commit_index {
-            let next_index = self.last_applied_index.plus(1);
+        if let Some(commit_index) = self.commit_index {
+            // Apply first entry, if not applied
+            if self.last_applied_index == None {
+                self.apply_single_entry(Index::start_index())?;
+                self.last_applied_index.replace(Index::start_index());
+            }
 
-            // TODO:2 implement batch/streamed read.
-            let entry = match self.read(next_index) {
-                Ok(Some(entry)) => entry,
-                // TODO:2 validate and/or gracefully handle.
-                Ok(None) => panic!("This should never happen #5230185123"),
-                Err(e) => return Err(e),
-            };
+            // Guaranteed to be present based on above block.
+            let mut last_applied_index = self.last_applied_index.unwrap();
 
-            self.commit_stream.notify_commit(
-                &self.logger,
-                api::CommittedEntry {
-                    key: api::EntryKey {
-                        term: entry.term,
-                        entry_index: next_index,
-                    },
-                    data: Bytes::from(entry.data),
-                },
-            );
-            self.last_applied_index = next_index;
+            // Apply all committed indexes until applied catches up.
+            //
+            // This may be a long running loop, and starve the Replica event loop from handling
+            // another event. Given this path is for followers only, it would only be on the
+            // critical path for redirecting caller or taking over leadership. Both should rarely
+            // overlap with when a new follower is catching up on commits.
+            while last_applied_index < commit_index {
+                let next_index = last_applied_index.plus(1);
+                self.apply_single_entry(next_index)?;
+                last_applied_index = next_index;
+                self.last_applied_index.replace(last_applied_index);
+            }
         }
+
+        Ok(())
+    }
+
+    fn apply_single_entry(&mut self, index_to_apply: Index) -> Result<(), io::Error> {
+        // TODO:2 implement batch/streamed read.
+        // TODO:3 Make failure less likely by buffering in memory limited number of recent uncommited entries.
+        let entry = match self.read(index_to_apply) {
+            Ok(Some(entry)) => entry,
+            // TODO:2 validate and/or gracefully handle.
+            Ok(None) => panic!("This should never happen #5230185123"),
+            Err(e) => return Err(e),
+        };
+
+        self.commit_stream.notify_commit(
+            &self.logger,
+            api::CommittedEntry {
+                data: Bytes::from(entry.data),
+                key: api::EntryKey {
+                    term: entry.term,
+                    entry_index: index_to_apply,
+                },
+            },
+        );
 
         Ok(())
     }
@@ -203,7 +244,7 @@ impl Into<Vec<u8>> for RaftCommitLogEntry {
     fn into(self) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::with_capacity(1 + 8 + self.data.len());
 
-        let term = self.term.into_inner();
+        let term = self.term.as_u64();
         bytes.push(RAFT_LOG_ENTRY_FORMAT_VERSION);
         bytes.push(term as u8);
         bytes.push((term >> 1 * 8) as u8);

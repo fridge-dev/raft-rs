@@ -1,37 +1,48 @@
-use std::io;
+use std::{fmt, io};
+
+#[derive(Copy, Clone, PartialOrd, PartialEq, Ord, Eq)]
+struct U64NonZero(u64);
+
+impl U64NonZero {
+    fn new(val: u64) -> Self {
+        assert_ne!(val, 0);
+        U64NonZero(val)
+    }
+}
 
 /// Index is an index of an entry in the log; i.e. a log entry's index.
-#[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Ord, Eq)]
-pub struct Index(u64);
+#[derive(Copy, Clone, PartialOrd, PartialEq, Ord, Eq)]
+pub struct Index(U64NonZero);
 
-// TODO:1 make Index(0) impossible (enum?)
 impl Index {
     pub fn new(index: u64) -> Self {
-        Index(index)
+        Index(U64NonZero::new(index))
     }
 
     pub fn new_usize(index: usize) -> Self {
         Self::new(index as u64)
     }
 
-    pub fn val(&self) -> u64 {
-        self.0
+    pub fn start_index() -> Self {
+        Self::new(1)
     }
 
-    pub fn incr(&mut self, delta: u64) {
-        self.0 += delta;
+    pub fn as_u64(&self) -> u64 {
+        self.0 .0
     }
 
     pub fn plus(&self, delta: u64) -> Index {
-        Index::new(self.0 + delta)
-    }
-
-    pub fn decr(&mut self, delta: u64) {
-        self.0 -= delta;
+        Index::new(self.as_u64() + delta)
     }
 
     pub fn minus(&self, delta: u64) -> Index {
-        Index::new(self.0 - delta)
+        Index::new(self.as_u64() - delta)
+    }
+}
+
+impl fmt::Debug for Index {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0 .0)
     }
 }
 
