@@ -7,8 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use tokio::time::Duration;
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct ElectionConfig {
+    pub my_replica_id: ReplicaId,
     pub leader_heartbeat_duration: Duration,
     pub follower_min_timeout: Duration,
     pub follower_max_timeout: Duration,
@@ -34,6 +35,37 @@ impl ElectionState {
         }
     }
 
+    pub fn transition_to_candidate(&mut self, term: Term, num_voting_replicas: usize) {
+        let mut cs = CandidateState::new(
+            term,
+            num_voting_replicas,
+            self.config.follower_min_timeout,
+            self.config.follower_max_timeout,
+            self.actor_client.clone(),
+        );
+
+        // Vote for self
+        cs.add_received_vote(self.config.my_replica_id.clone());
+
+        self.state = State::Candidate(cs);
+    }
+
+    fn transition_to_leader(&mut self) {
+        self.state = State::Leader(LeaderState::new(
+            self.config.leader_heartbeat_duration,
+            self.actor_client.clone(),
+        ));
+    }
+
+    pub fn transition_to_follower(&mut self, new_leader_id: Option<ReplicaId>) {
+        self.state = State::Follower(FollowerState::with_leader_info(
+            new_leader_id,
+            self.config.follower_min_timeout,
+            self.config.follower_max_timeout,
+            self.actor_client.clone(),
+        ));
+    }
+
     pub fn current_leader(&self) -> CurrentLeader {
         match &self.state {
             State::Leader(_) => CurrentLeader::Me,
@@ -52,32 +84,30 @@ impl ElectionState {
         }
     }
 
-    /// `add_received_vote()` returns the number of unique votes we've received after adding the
-    /// provided `vote_from`
-    pub fn add_received_vote_if_candidate(&mut self, term: Term, vote_from: ReplicaId) -> usize {
+    pub fn add_vote_if_candidate_and_transition_to_leader_if_quorum(&mut self, logger: &slog::Logger, term: Term, vote_from: ReplicaId) {
         if let State::Candidate(cs) = &mut self.state {
-            if cs.term == term {
-                cs.add_received_vote(vote_from)
-            } else {
-                // Received response for outdated term.
-                0
+            if cs.term != term {
+                slog::info!(logger, "Received vote for outdated term {:?}, current term: {:?}.", term, cs.term);
+                return;
             }
+
+            let num_votes_received = cs.add_received_vote(vote_from);
+            slog::info!(logger, "Received {}/{} votes for term {:?}", num_votes_received, cs.num_voting_replicas, term);
+            if num_votes_received >= Self::get_majority_count(cs.num_voting_replicas) {
+                self.transition_to_leader();
+            }
+            return;
         } else {
-            0
+            slog::info!(logger, "Received vote for term {:?} after transitioning to a different election state.", term);
+            return;
         }
     }
 
-    // TODO:2 possible name: `on_follower_timeout()`
-    pub fn transition_to_candidate(&mut self, term: Term) {
-        self.state = State::Candidate(CandidateState::new(
-            term,
-            self.config.follower_min_timeout,
-            self.config.follower_max_timeout,
-            self.actor_client.clone(),
-        ));
+    fn get_majority_count(num_voting_replicas: usize) -> usize {
+        (num_voting_replicas / 2) + 1
     }
 
-    pub fn is_election_open(&self, term: Term) -> bool {
+    pub fn is_currently_candidate_for_term(&self, term: Term) -> bool {
         if let State::Candidate(cs) = &self.state {
             cs.term == term
         } else {
@@ -85,28 +115,12 @@ impl ElectionState {
         }
     }
 
-    // TODO:2 possible name: `on_majority_votes`
-    pub fn transition_to_leader_if_not(&mut self) {
-        // TODO:1 figure out how to model validate state machines better.
-        //        Maybe add Term and have a FSM with guaranteed termination
-        //        that resets every Term incr.
-        if let State::Leader(_) = &self.state {
-            return;
+    pub fn set_leader_if_unknown(&mut self, leader_id: &ReplicaId) {
+        if let State::Follower(fs) = &mut self.state {
+            if fs.leader_id.is_none() {
+                fs.leader_id.replace(leader_id.clone());
+            }
         }
-
-        self.state = State::Leader(LeaderState::new(
-            self.config.leader_heartbeat_duration,
-            self.actor_client.clone(),
-        ))
-    }
-
-    pub fn transition_to_follower(&mut self, new_leader_id: Option<ReplicaId>) {
-        self.state = State::Follower(FollowerState::with_leader_info(
-            new_leader_id,
-            self.config.follower_min_timeout,
-            self.config.follower_max_timeout,
-            self.actor_client.clone(),
-        ));
     }
 }
 
@@ -139,13 +153,14 @@ enum State {
 
 struct LeaderState {
     peer_state: HashMap<ReplicaId, LeaderServerView>,
-    heartbeat_timer: LeaderTimerHandle,
+    _heartbeat_timer: LeaderTimerHandle,
 }
 
 struct CandidateState {
     term: Term,
+    num_voting_replicas: usize,
     received_votes_from: HashSet<ReplicaId>,
-    follower_timeout_tracker: FollowerTimerHandle,
+    _follower_timeout_tracker: FollowerTimerHandle,
 }
 
 struct FollowerState {
@@ -161,22 +176,24 @@ impl LeaderState {
     ) -> Self {
         LeaderState {
             peer_state: HashMap::new(),
-            heartbeat_timer: LeaderTimerHandle::spawn_background_task(heartbeat_duration, actor_client),
+            _heartbeat_timer: LeaderTimerHandle::spawn_background_task(heartbeat_duration, actor_client),
         }
     }
 }
 
 impl CandidateState {
-    pub fn new(term: Term, min_timeout: Duration, max_timeout: Duration, actor_client: actor::ActorClient) -> Self {
+    pub fn new(
+        term: Term,
+        num_voting_replicas: usize,
+        min_timeout: Duration,
+        max_timeout: Duration,
+        actor_client: actor::ActorClient,
+    ) -> Self {
         CandidateState {
             term,
-            // with_capacity(3)? CmonBruh, you can't assume that.
-            // Well... Because of jittered follower timeout, most of the time if a follower
-            // transitions to candidate, they'll also transition to leader. And most of the time, I
-            // will run this as a cluster of 5, so we only need 3. If we run cluster at different
-            // size, this won't matter hardly at all.
-            received_votes_from: HashSet::with_capacity(3),
-            follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
+            num_voting_replicas,
+            received_votes_from: HashSet::with_capacity(num_voting_replicas),
+            _follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
                 min_timeout,
                 max_timeout,
                 actor_client,

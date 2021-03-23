@@ -1,3 +1,5 @@
+#![allow(dead_code)] // TODO:3 remove
+
 use crate::commitlog::{Entry, Index, Log};
 use std::io;
 use std::io::Error;

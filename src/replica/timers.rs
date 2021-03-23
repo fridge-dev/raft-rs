@@ -33,6 +33,7 @@ impl LeaderTimerHandle {
             if stop_check.should_stop() {
                 break;
             }
+            // TODO:1.5 do we need term in leader timer event payload? Prevent against outdated heartbeat.
             actor_client.leader_timer().await;
         }
     }

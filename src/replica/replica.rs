@@ -58,6 +58,7 @@ where
         let my_replica_id = config.peer_tracker.my_replica_id().clone();
         let election_state = ElectionState::new_follower(
             ElectionConfig {
+                my_replica_id: my_replica_id.clone(),
                 leader_heartbeat_duration: config.leader_heartbeat_duration,
                 follower_min_timeout: config.follower_min_timeout,
                 follower_max_timeout: config.follower_max_timeout,
@@ -121,7 +122,7 @@ where
         })
     }
 
-    pub fn server_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError> {
+    pub fn server_handle_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError> {
         // Ensure candidate is known member.
         if !self.cluster_members.contains_member(&input.candidate_id) {
             return Err(RequestVoteError::CandidateNotInCluster);
@@ -156,14 +157,11 @@ where
         // least as up-to-date as receiver’s log, grant vote (§5.2, §5.4).
 
         // If votedFor is null or candidateId, and...
-        let can_vote_for_candidate = match opt_voted_for {
-            None => true,
-            Some(voted_for) => *voted_for == input.candidate_id,
-        };
-        let already_voted_for_someone_else = !can_vote_for_candidate;
-        if already_voted_for_someone_else {
-            slog::info!(self.logger, "Not granting vote. We already voted for someone else.");
-            return Ok(RequestVoteOutput { vote_granted: false });
+        if let Some(voted_for) = opt_voted_for {
+            if *voted_for != input.candidate_id {
+                slog::info!(self.logger, "Not granting vote. We already voted for {:?}.", voted_for);
+                return Ok(RequestVoteOutput { vote_granted: false });
+            }
         }
 
         // ...and candidate’s log is at least as up-to-date as receiver’s log...
@@ -173,6 +171,7 @@ where
         }
 
         // ...grant vote
+        slog::info!(self.logger, "Voting for {:?}.", input.candidate_id);
         let cas_success = self
             .local_state
             .store_vote_for_term_if_unvoted(input.candidate_term, input.candidate_id.clone());
@@ -231,38 +230,13 @@ where
     pub fn handle_request_vote_reply_from_peer(&mut self, reply: RequestVoteReplyFromPeer) {
         match reply.result {
             RequestVoteResult::VoteGranted => {
-                let votes_received = self
-                    .election_state
-                    .add_received_vote_if_candidate(reply.term, reply.peer_id);
-                if votes_received > 0 {
-                    slog::info!(
-                        self.logger,
-                        "Received {}/{} votes for term {:?}",
-                        votes_received,
-                        self.cluster_members.quorum_size(),
-                        reply.term,
-                    );
-                } else {
-                    slog::info!(
-                        self.logger,
-                        "Received vote for term {:?}, but we're no longer a candidate for that term.",
-                        reply.term,
-                    )
-                }
-
-                let received_majority = 2 * votes_received / self.cluster_members.quorum_size() >= 1;
-                if received_majority {
-                    self.election_state.transition_to_leader_if_not();
-                    slog::info!(self.logger, "Election state: {:?}", self.election_state);
-                    // No need to set heartbeat immediately. We spawn a heartbeat timer that will
-                    // the first heartbeat.
-                }
+                self.election_state.add_vote_if_candidate_and_transition_to_leader_if_quorum(&self.logger, reply.term, reply.peer_id);
             }
             RequestVoteResult::VoteNotGranted => {
                 // No action
             }
             RequestVoteResult::RetryableFailure | RequestVoteResult::MalformedReply => {
-                if !self.election_state.is_election_open(reply.term) {
+                if !self.election_state.is_currently_candidate_for_term(reply.term) {
                     return;
                 }
 
@@ -287,7 +261,7 @@ where
         }
     }
 
-    pub fn handle_append_entries(
+    pub fn server_handle_append_entries(
         &mut self,
         input: AppendEntriesInput,
     ) -> Result<AppendEntriesOutput, AppendEntriesError> {
@@ -311,14 +285,7 @@ where
             self.election_state
                 .transition_to_follower(Some(input.leader_id.clone()));
         } else {
-            // If this is the first AppendEntries we've seen for this term, set the leader info
-            // for this term.
-            let awaiting_election_outcome = self.election_state.current_leader() == CurrentLeader::Unknown;
-            let append_entries_for_current_term = self.local_state.current_term() == input.leader_term;
-            if awaiting_election_outcome && append_entries_for_current_term {
-                self.election_state
-                    .transition_to_follower(Some(input.leader_id.clone()));
-            }
+            self.election_state.set_leader_if_unknown(&input.leader_id);
         }
 
         // Reset follower timeout.
@@ -384,7 +351,6 @@ where
         }
 
         // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-        //v3
         match input.leader_log_state {
             LeaderLogState::Normal {
                 previous_log_entry_index,
@@ -484,10 +450,10 @@ where
 
     pub fn handle_follower_timeout(&mut self) {
         let new_term = self.local_state.increment_term_and_vote_for_self();
-        self.election_state.transition_to_candidate(new_term);
+        self.election_state.transition_to_candidate(new_term, self.cluster_members.num_voting_replicas());
         slog::info!(
             self.logger,
-            "Timed out as follower. Changing to candidate. Election state: {:?}",
+            "Timed out as follower. Changed to candidate. Election state: {:?}",
             self.election_state
         );
 

@@ -19,15 +19,13 @@ use tonic::{Request, Response, Status};
 /// RpcServer is the type that implements the Raft gRPC interface.
 pub struct RpcServer {
     logger: slog::Logger,
-    replica_id: String,
     local_replica: ActorClient,
 }
 
 impl RpcServer {
-    pub fn new(logger: slog::Logger, replica_id: String, local_replica: ActorClient) -> Self {
+    pub fn new(logger: slog::Logger, local_replica: ActorClient) -> Self {
         RpcServer {
             logger,
-            replica_id,
             local_replica,
         }
     }

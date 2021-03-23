@@ -182,14 +182,14 @@ where
                 callback.send(result);
             }
             Event::RequestVote(input, callback) => {
-                let result = self.replica.server_request_vote(input);
+                let result = self.replica.server_handle_request_vote(input);
                 callback.send(result);
             }
             Event::RequestVoteReplyFromPeer(reply) => {
                 self.replica.handle_request_vote_reply_from_peer(reply);
             }
             Event::AppendEntries(input, callback) => {
-                let result = self.replica.handle_append_entries(input);
+                let result = self.replica.server_handle_append_entries(input);
                 callback.send(result);
             }
             Event::AppendEntriesReplyFromPeer(reply) => {

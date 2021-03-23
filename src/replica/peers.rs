@@ -145,9 +145,9 @@ impl PeerTracker {
         self.peers.get(id)
     }
 
-    /// `quorum_size` returns the total number of voting replicas (including self) to
+    /// `num_voting_replicas` returns the total number of voting replicas (including self) to
     /// participate in elections.
-    pub fn quorum_size(&self) -> usize {
+    pub fn num_voting_replicas(&self) -> usize {
         // Currently, we don't support non-voting peers, so we just count
         // peers + self.
         self.peers.len() + 1

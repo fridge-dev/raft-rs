@@ -1,5 +1,3 @@
-#![allow(dead_code)] // TODO:1.5 remove
-
 mod actor;
 mod api;
 mod commitlog;
