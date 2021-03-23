@@ -24,10 +24,7 @@ pub struct RpcServer {
 
 impl RpcServer {
     pub fn new(logger: slog::Logger, local_replica: ActorClient) -> Self {
-        RpcServer {
-            logger,
-            local_replica,
-        }
+        RpcServer { logger, local_replica }
     }
 
     pub async fn run(self, socket_addr: SocketAddr) {
@@ -190,11 +187,11 @@ impl GrpcRaft for RpcServer {
         &self,
         rpc_request: Request<ProtoRequestVoteReq>,
     ) -> Result<Response<ProtoRequestVoteResult>, Status> {
-        slog::debug!(self.logger, "Wire - {:?}", rpc_request);
+        slog::debug!(self.logger, "ServerWire - {:?}", rpc_request);
         let app_input = Self::convert_request_vote_input(rpc_request.into_inner())?;
         let app_result = self.local_replica.request_vote(app_input).await;
         let rpc_reply = Self::convert_request_vote_result(app_result);
-        slog::debug!(self.logger, "Wire - {:?}", rpc_reply);
+        slog::debug!(self.logger, "ServerWire - {:?}", rpc_reply);
         Ok(Response::new(rpc_reply))
     }
 
@@ -202,11 +199,11 @@ impl GrpcRaft for RpcServer {
         &self,
         rpc_request: Request<ProtoAppendEntriesReq>,
     ) -> Result<Response<ProtoAppendEntriesResult>, Status> {
-        slog::debug!(self.logger, "Wire - {:?}", rpc_request);
+        slog::debug!(self.logger, "ServerWire - {:?}", rpc_request);
         let app_input = Self::convert_append_entries_input(rpc_request.into_inner())?;
         let app_result = self.local_replica.append_entries(app_input).await;
         let rpc_reply = Self::convert_append_entries_result(app_result);
-        slog::debug!(self.logger, "Wire - {:?}", rpc_reply);
+        slog::debug!(self.logger, "ServerWire - {:?}", rpc_reply);
         Ok(Response::new(rpc_reply))
     }
 }

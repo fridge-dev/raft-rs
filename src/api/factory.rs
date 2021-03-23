@@ -37,10 +37,7 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     tokio::spawn(replica_actor.run_event_loop());
 
     let server_addr = get_my_server_addr(&config.cluster_info)?;
-    let replica_raft_server = RpcServer::new(
-        root_logger.clone(),
-        actor_client.clone(),
-    );
+    let replica_raft_server = RpcServer::new(root_logger.clone(), actor_client.clone());
     tokio::spawn(replica_raft_server.run(server_addr));
 
     let replication_log = client::new_replicated_log(actor_client);

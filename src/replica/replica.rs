@@ -2,8 +2,8 @@ use crate::actor::ActorClient;
 use crate::api;
 use crate::commitlog::{Index, Log};
 use crate::grpc::{
-    proto_append_entries_result, proto_request_vote_error, proto_request_vote_result, ProtoAppendEntriesReq,
-    ProtoRequestVoteReq,
+    proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
+    ProtoAppendEntriesReq, ProtoRequestVoteReq,
 };
 use crate::replica::commit_log::{RaftCommitLogEntry, RaftLog};
 use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState};
@@ -122,7 +122,10 @@ where
         })
     }
 
-    pub fn server_handle_request_vote(&mut self, input: RequestVoteInput) -> Result<RequestVoteOutput, RequestVoteError> {
+    pub fn server_handle_request_vote(
+        &mut self,
+        input: RequestVoteInput,
+    ) -> Result<RequestVoteOutput, RequestVoteError> {
         // Ensure candidate is known member.
         if !self.cluster_members.contains_member(&input.candidate_id) {
             return Err(RequestVoteError::CandidateNotInCluster);
@@ -230,7 +233,8 @@ where
     pub fn handle_request_vote_reply_from_peer(&mut self, reply: RequestVoteReplyFromPeer) {
         match reply.result {
             RequestVoteResult::VoteGranted => {
-                self.election_state.add_vote_if_candidate_and_transition_to_leader_if_quorum(&self.logger, reply.term, reply.peer_id);
+                self.election_state
+                    .add_vote_if_candidate_and_transition_to_leader_if_quorum(&self.logger, reply.term, reply.peer_id);
             }
             RequestVoteResult::VoteNotGranted => {
                 // No action
@@ -393,6 +397,7 @@ where
 
         for peer in self.cluster_members.iter_peers() {
             tokio::task::spawn(Self::call_peer_append_entries(
+                self.logger.clone(),
                 peer.client.clone(),
                 peer.metadata.replica_id().clone(),
                 self.new_append_entries_request(),
@@ -426,21 +431,57 @@ where
     }
 
     async fn call_peer_append_entries(
+        logger: slog::Logger,
         mut peer_client: RaftClient,
         peer_id: ReplicaId,
-        request: ProtoAppendEntriesReq,
+        rpc_request: ProtoAppendEntriesReq,
         callback: ActorClient,
     ) {
-        let rpc_reply = peer_client.append_entries(request).await;
+        slog::debug!(logger, "ClientWire - {:?}", rpc_request);
+        let rpc_reply = peer_client.append_entries(rpc_request).await;
+        slog::debug!(logger, "ClientWire - {:?}", rpc_reply);
 
-        // TODO:1 better err handling
         let fail = match rpc_reply {
             Ok(rpc_result) => match rpc_result.result {
                 Some(proto_append_entries_result::Result::Ok(_)) => false,
-                Some(proto_append_entries_result::Result::Err(_)) => true,
-                None => true,
+                Some(proto_append_entries_result::Result::Err(err)) => {
+                    match err.err {
+                        Some(proto_append_entries_error::Err::ServerFault(payload)) => {
+                            slog::warn!(logger, "Server returned failure: {:?}", payload.message);
+                        }
+                        Some(proto_append_entries_error::Err::StaleTerm(payload)) => {
+                            slog::info!(
+                                logger,
+                                "Received outdated term failure. New term: {:?}",
+                                payload.current_term
+                            );
+                        }
+                        Some(proto_append_entries_error::Err::MissingLog(_)) => {
+                            slog::info!(logger, "Server missing log.");
+                        }
+                        Some(proto_append_entries_error::Err::ClientNotInCluster(_)) => {
+                            slog::info!(logger, "We're not in the cluster anymore.");
+                        }
+                        None => {
+                            slog::warn!(logger, "Malformed AppendEntries reply");
+                        }
+                    }
+
+                    true
+                }
+                None => {
+                    slog::warn!(logger, "Malformed AppendEntries reply");
+                    true
+                }
             },
-            Err(_) => true,
+            Err(rpc_status) => {
+                slog::warn!(
+                    logger,
+                    "Un-modeled failure from AppendEntries RPC call: {:?}",
+                    rpc_status
+                );
+                true
+            }
         };
 
         let callback_input = AppendEntriesReplyFromPeer { peer_id, fail };
@@ -450,7 +491,8 @@ where
 
     pub fn handle_follower_timeout(&mut self) {
         let new_term = self.local_state.increment_term_and_vote_for_self();
-        self.election_state.transition_to_candidate(new_term, self.cluster_members.num_voting_replicas());
+        self.election_state
+            .transition_to_candidate(new_term, self.cluster_members.num_voting_replicas());
         slog::info!(
             self.logger,
             "Timed out as follower. Changed to candidate. Election state: {:?}",
@@ -488,11 +530,13 @@ where
         logger: slog::Logger,
         mut peer_client: RaftClient,
         peer_id: ReplicaId,
-        request: ProtoRequestVoteReq,
+        rpc_request: ProtoRequestVoteReq,
         callback: ActorClient,
         term: Term,
     ) {
-        let rpc_reply = peer_client.request_vote(request).await;
+        slog::debug!(logger, "ClientWire - {:?}", rpc_request);
+        let rpc_reply = peer_client.request_vote(rpc_request).await;
+        slog::debug!(logger, "ClientWire - {:?}", rpc_reply);
 
         let callback_result = match rpc_reply {
             Ok(rpc_result) => match rpc_result.result {

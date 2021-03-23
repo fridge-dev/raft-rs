@@ -84,21 +84,41 @@ impl ElectionState {
         }
     }
 
-    pub fn add_vote_if_candidate_and_transition_to_leader_if_quorum(&mut self, logger: &slog::Logger, term: Term, vote_from: ReplicaId) {
+    pub fn add_vote_if_candidate_and_transition_to_leader_if_quorum(
+        &mut self,
+        logger: &slog::Logger,
+        term: Term,
+        vote_from: ReplicaId,
+    ) {
         if let State::Candidate(cs) = &mut self.state {
             if cs.term != term {
-                slog::info!(logger, "Received vote for outdated term {:?}, current term: {:?}.", term, cs.term);
+                slog::info!(
+                    logger,
+                    "Received vote for outdated term {:?}, current term: {:?}.",
+                    term,
+                    cs.term
+                );
                 return;
             }
 
             let num_votes_received = cs.add_received_vote(vote_from);
-            slog::info!(logger, "Received {}/{} votes for term {:?}", num_votes_received, cs.num_voting_replicas, term);
+            slog::info!(
+                logger,
+                "Received {}/{} votes for term {:?}",
+                num_votes_received,
+                cs.num_voting_replicas,
+                term
+            );
             if num_votes_received >= Self::get_majority_count(cs.num_voting_replicas) {
                 self.transition_to_leader();
             }
             return;
         } else {
-            slog::info!(logger, "Received vote for term {:?} after transitioning to a different election state.", term);
+            slog::info!(
+                logger,
+                "Received vote for term {:?} after transitioning to a different election state.",
+                term
+            );
             return;
         }
     }
