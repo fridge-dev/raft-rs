@@ -1,7 +1,7 @@
 use crate::actor::{ActorClient, ReplicaActor};
 use crate::api::client;
 use crate::commitlog::InMemoryLog;
-use crate::replica::{PeerTracker, Replica, ReplicaConfig, VolatileLocalState};
+use crate::replica::{ClusterTracker, Replica, ReplicaConfig, VolatileLocalState};
 use crate::server::RpcServer;
 use crate::{api, replica, CommitStream, RaftClientConfig, ReplicatedLog};
 use std::error::Error;
@@ -14,15 +14,15 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
 
     let commit_log = InMemoryLog::create(root_logger.clone()).map_err(|e| ClientCreationError::LogInitialization(e))?;
 
-    let peer_tracker = try_create_peer_tracker(root_logger.clone(), config.cluster_info.clone()).await?;
-    let local_state = VolatileLocalState::new(peer_tracker.my_replica_id().clone());
+    let cluster_tracker = try_create_cluster_tracker(root_logger.clone(), config.cluster_info.clone()).await?;
+    let local_state = VolatileLocalState::new(cluster_tracker.my_replica_id().clone());
 
     let (commit_stream_publisher, commit_stream) = client::create_commit_stream();
     let (actor_queue_tx, actor_queue_rx) = mpsc::channel(10);
     let actor_client = ActorClient::new(actor_queue_tx);
 
     let replica = Replica::new(ReplicaConfig {
-        peer_tracker,
+        cluster_tracker,
         commit_log,
         local_state,
         commit_stream_publisher,
@@ -78,10 +78,10 @@ fn get_my_server_addr(cluster_info: &api::ClusterInfo) -> Result<SocketAddr, Cli
     Err(ClientCreationError::MeNotInCluster)
 }
 
-async fn try_create_peer_tracker(
+async fn try_create_cluster_tracker(
     logger: slog::Logger,
     cluster_info: api::ClusterInfo,
-) -> Result<replica::PeerTracker, ClientCreationError> {
+) -> Result<replica::ClusterTracker, ClientCreationError> {
     let mut my_md = None;
     let mut peers_md = Vec::with_capacity(cluster_info.cluster_members.len() - 1);
     for member_info in cluster_info.cluster_members.into_iter() {
@@ -94,7 +94,7 @@ async fn try_create_peer_tracker(
 
     let my_md = my_md.ok_or_else(|| ClientCreationError::MeNotInCluster)?;
 
-    PeerTracker::create_valid_peer_tracker(logger, my_md, peers_md)
+    ClusterTracker::create_valid_cluster(logger, my_md, peers_md)
         .await
         .map_err(|e| ClientCreationError::InvalidClusterInfo(e.into()))
 }

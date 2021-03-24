@@ -35,6 +35,15 @@ impl ElectionState {
         }
     }
 
+    pub fn transition_to_follower(&mut self, new_leader_id: Option<ReplicaId>) {
+        self.state = State::Follower(FollowerState::with_leader_info(
+            new_leader_id,
+            self.config.follower_min_timeout,
+            self.config.follower_max_timeout,
+            self.actor_client.clone(),
+        ));
+    }
+
     pub fn transition_to_candidate(&mut self, term: Term, num_voting_replicas: usize) {
         let mut cs = CandidateState::new(
             term,
@@ -50,18 +59,11 @@ impl ElectionState {
         self.state = State::Candidate(cs);
     }
 
-    fn transition_to_leader(&mut self) {
+    pub fn transition_to_leader(&mut self, peer_ids: HashSet<ReplicaId>, previous_log_entry_index: Option<Index>) {
         self.state = State::Leader(LeaderState::new(
+            peer_ids,
+            previous_log_entry_index,
             self.config.leader_heartbeat_duration,
-            self.actor_client.clone(),
-        ));
-    }
-
-    pub fn transition_to_follower(&mut self, new_leader_id: Option<ReplicaId>) {
-        self.state = State::Follower(FollowerState::with_leader_info(
-            new_leader_id,
-            self.config.follower_min_timeout,
-            self.config.follower_max_timeout,
             self.actor_client.clone(),
         ));
     }
@@ -84,12 +86,21 @@ impl ElectionState {
         }
     }
 
-    pub fn add_vote_if_candidate_and_transition_to_leader_if_quorum(
+    pub fn set_leader_if_unknown(&mut self, leader_id: &ReplicaId) {
+        if let State::Follower(fs) = &mut self.state {
+            if fs.leader_id.is_none() {
+                fs.leader_id.replace(leader_id.clone());
+            }
+        }
+    }
+
+    /// Return true if we've received a majority of votes.
+    pub fn add_vote_if_candidate(
         &mut self,
         logger: &slog::Logger,
         term: Term,
         vote_from: ReplicaId,
-    ) {
+    ) -> bool {
         if let State::Candidate(cs) = &mut self.state {
             if cs.term != term {
                 slog::info!(
@@ -98,7 +109,7 @@ impl ElectionState {
                     term,
                     cs.term
                 );
-                return;
+                return false;
             }
 
             let num_votes_received = cs.add_received_vote(vote_from);
@@ -109,17 +120,14 @@ impl ElectionState {
                 cs.num_voting_replicas,
                 term
             );
-            if num_votes_received >= Self::get_majority_count(cs.num_voting_replicas) {
-                self.transition_to_leader();
-            }
-            return;
+            return num_votes_received >= Self::get_majority_count(cs.num_voting_replicas);
         } else {
             slog::info!(
                 logger,
                 "Received vote for term {:?} after transitioning to a different election state.",
                 term
             );
-            return;
+            return false;
         }
     }
 
@@ -135,11 +143,19 @@ impl ElectionState {
         }
     }
 
-    pub fn set_leader_if_unknown(&mut self, leader_id: &ReplicaId) {
-        if let State::Follower(fs) = &mut self.state {
-            if fs.leader_id.is_none() {
-                fs.leader_id.replace(leader_id.clone());
-            }
+    pub fn leader_state(&self) -> Option<&LeaderStateTracker> {
+        if let State::Leader(ls) = &self.state {
+            Some(&ls.tracker)
+        } else {
+            None
+        }
+    }
+
+    pub fn leader_state_mut(&mut self) -> Option<&mut LeaderStateTracker> {
+        if let State::Leader(ls) = &mut self.state {
+            Some(&mut ls.tracker)
+        } else {
+            None
         }
     }
 }
@@ -172,7 +188,7 @@ enum State {
 }
 
 struct LeaderState {
-    peer_state: HashMap<ReplicaId, LeaderServerView>,
+    tracker: LeaderStateTracker,
     _heartbeat_timer: LeaderTimerHandle,
 }
 
@@ -190,12 +206,18 @@ struct FollowerState {
 
 impl LeaderState {
     pub fn new(
-        /* TODO:1.5 peers should be listed here */
+        peer_ids: HashSet<ReplicaId>,
+        previous_log_entry_index: Option<Index>,
         heartbeat_duration: Duration,
         actor_client: actor::ActorClient,
     ) -> Self {
+        let mut peer_state = HashMap::with_capacity(peer_ids.len());
+        for peer_id in peer_ids {
+            peer_state.insert(peer_id, PeerLogState::new(previous_log_entry_index));
+        }
+
         LeaderState {
-            peer_state: HashMap::new(),
+            tracker: LeaderStateTracker::new(peer_state),
             _heartbeat_timer: LeaderTimerHandle::spawn_background_task(heartbeat_duration, actor_client),
         }
     }
@@ -262,17 +284,50 @@ impl FollowerState {
     }
 }
 
-// Consider separate mod for leader state tracking, if it's more involved.
-struct LeaderServerView {
-    next: Index,
-    matched: Index,
+// ------- Leader state tracking -------
+
+pub struct LeaderStateTracker {
+    peer_state: HashMap<ReplicaId, PeerLogState>,
 }
 
-impl LeaderServerView {
-    pub fn new() -> Self {
-        LeaderServerView {
-            next: Index::new(0),
-            matched: Index::new(0),
+impl LeaderStateTracker {
+    fn new(peer_state: HashMap<ReplicaId, PeerLogState>) -> Self {
+        LeaderStateTracker {
+            peer_state,
         }
+    }
+
+    pub fn peer_state(&self, peer_id: &ReplicaId) -> Option<&PeerLogState> {
+        self.peer_state.get(peer_id)
+    }
+
+    pub fn peer_state_mut(&mut self, peer_id: &ReplicaId) -> Option<&mut PeerLogState> {
+        self.peer_state.get_mut(peer_id)
+    }
+
+    pub fn peer_ids(&self) -> HashSet<ReplicaId> {
+        self.peer_state.keys().cloned().collect()
+    }
+}
+
+pub struct PeerLogState {
+    // > index of the next log entry to send to that server
+    // > (initialized to leader last log index + 1)
+    next: Index,
+    // > index of highest log entry known to be replicated on server
+    // > (initialized to 0, increases monotonically)
+    matched: Option<Index>,
+}
+
+impl PeerLogState {
+    fn new(previous_log_entry_index: Option<Index>) -> Self {
+        PeerLogState {
+            next: previous_log_entry_index.map(|i| i.plus(1)).unwrap_or_else(|| Index::start_index()),
+            matched: None,
+        }
+    }
+
+    pub fn next_and_previous_index(&self) -> (Index, Option<Index>) {
+        (self.next, self.next.checked_minus(1))
     }
 }

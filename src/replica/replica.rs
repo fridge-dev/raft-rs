@@ -1,30 +1,28 @@
 use crate::actor::ActorClient;
 use crate::api;
 use crate::commitlog::{Index, Log};
-use crate::grpc::{
-    proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
-    ProtoAppendEntriesReq, ProtoRequestVoteReq,
-};
+use crate::grpc::{proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result, ProtoAppendEntriesReq, ProtoRequestVoteReq, ProtoLogEntry};
 use crate::replica::commit_log::{RaftCommitLogEntry, RaftLog};
-use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState};
+use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState, LeaderStateTracker, PeerLogState};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peer_client::RaftClient;
-use crate::replica::peers::{PeerTracker, ReplicaId};
+use crate::replica::peers::{ClusterTracker, ReplicaId, Peer};
 use crate::replica::replica_api::{
     AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesReplyFromPeer,
     EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, RequestVoteError,
     RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
 };
 use crate::replica::{LeaderLogState, RequestVoteResult};
-use std::cmp;
+use std::{cmp, io};
 use tokio::time::Duration;
+use std::collections::HashSet;
 
 pub struct ReplicaConfig<L, S>
 where
     L: Log<RaftCommitLogEntry>,
     S: PersistentLocalState,
 {
-    pub peer_tracker: PeerTracker,
+    pub cluster_tracker: ClusterTracker,
     pub commit_log: L,
     pub local_state: S,
     pub commit_stream_publisher: api::CommitStreamPublisher,
@@ -41,7 +39,7 @@ where
     S: PersistentLocalState,
 {
     my_replica_id: ReplicaId,
-    cluster_members: PeerTracker,
+    cluster_tracker: ClusterTracker,
     local_state: S,
     election_state: ElectionState,
     commit_log: RaftLog<L>,
@@ -55,7 +53,7 @@ where
     S: PersistentLocalState + 'static,
 {
     pub fn new(config: ReplicaConfig<L, S>) -> Self {
-        let my_replica_id = config.peer_tracker.my_replica_id().clone();
+        let my_replica_id = config.cluster_tracker.my_replica_id().clone();
         let election_state = ElectionState::new_follower(
             ElectionConfig {
                 my_replica_id: my_replica_id.clone(),
@@ -69,7 +67,7 @@ where
 
         Replica {
             my_replica_id,
-            cluster_members: config.peer_tracker,
+            cluster_tracker: config.cluster_tracker,
             local_state: config.local_state,
             election_state,
             commit_log,
@@ -84,8 +82,8 @@ where
     ) -> Result<EnqueueForReplicationOutput, EnqueueForReplicationError> {
         // Leader check
         match self.election_state.current_leader() {
-            CurrentLeader::Me => { /* carry on */ }
-            CurrentLeader::Other(leader_id) => match self.cluster_members.get_metadata(&leader_id) {
+            CurrentLeader::Me => { /* carry on */ },
+            CurrentLeader::Other(leader_id) => match self.cluster_tracker.metadata(&leader_id) {
                 Some(leader) => {
                     return Err(EnqueueForReplicationError::LeaderRedirect {
                         leader_id: leader_id.into_inner(),
@@ -101,7 +99,7 @@ where
             },
             CurrentLeader::Unknown => {
                 return Err(EnqueueForReplicationError::NoLeader);
-            }
+            },
         }
 
         // > If command received from client: append entry to local log,
@@ -127,7 +125,7 @@ where
         input: RequestVoteInput,
     ) -> Result<RequestVoteOutput, RequestVoteError> {
         // Ensure candidate is known member.
-        if !self.cluster_members.contains_member(&input.candidate_id) {
+        if !self.cluster_tracker.contains_member(&input.candidate_id) {
             return Err(RequestVoteError::CandidateNotInCluster);
         }
 
@@ -233,8 +231,13 @@ where
     pub fn handle_request_vote_reply_from_peer(&mut self, reply: RequestVoteReplyFromPeer) {
         match reply.result {
             RequestVoteResult::VoteGranted => {
-                self.election_state
-                    .add_vote_if_candidate_and_transition_to_leader_if_quorum(&self.logger, reply.term, reply.peer_id);
+                let received_majority_vote = self.election_state.add_vote_if_candidate(&self.logger, reply.term, reply.peer_id);
+                if received_majority_vote {
+                    self.election_state.transition_to_leader(
+                        self.cluster_tracker.peer_ids(),
+                        self.commit_log.latest_entry().map(|(_, index)| index),
+                    );
+                }
             }
             RequestVoteResult::VoteNotGranted => {
                 // No action
@@ -244,7 +247,7 @@ where
                     return;
                 }
 
-                if let Some(peer) = self.cluster_members.peer(&reply.peer_id) {
+                if let Some(peer) = self.cluster_tracker.peer(&reply.peer_id) {
                     // TODO:1.5 add RequestId to remote call
                     tokio::task::spawn(Self::call_peer_request_vote(
                         self.logger.clone(),
@@ -270,7 +273,7 @@ where
         input: AppendEntriesInput,
     ) -> Result<AppendEntriesOutput, AppendEntriesError> {
         // Ensure candidate is known member.
-        if !self.cluster_members.contains_member(&input.leader_id) {
+        if !self.cluster_tracker.contains_member(&input.leader_id) {
             return Err(AppendEntriesError::ClientNotInCluster);
         }
 
@@ -390,35 +393,107 @@ where
     }
 
     pub fn handle_leader_timer(&mut self) {
-        // Check still leader
-        if self.election_state.current_leader() != CurrentLeader::Me {
-            return;
-        }
-
-        for peer in self.cluster_members.iter_peers() {
-            tokio::task::spawn(Self::call_peer_append_entries(
-                self.logger.clone(),
-                peer.client.clone(),
-                peer.metadata.replica_id().clone(),
-                self.new_append_entries_request(),
-                self.actor_client.clone(),
-            ));
+        match self.election_state.leader_state() {
+            None => { /* Not leader anymore */ }
+            Some(leader_state) => {
+                for peer in self.cluster_tracker.iter_peers() {
+                    // Don't terminate iteration of peers early to ensure we retain leadership
+                    // in case a leader gets corrupted state related to a single peer. Maybe
+                    // change this in the future, who knows.
+                    match self.try_spawn_append_entries(leader_state, peer) {
+                        Ok(_) => {}
+                        Err(HandleLeaderTimerError::DiskRead(index, ioe)) => {
+                            slog::error!(self.logger, "Failed to read entry at index {:?}: {:?}", index, ioe);
+                        }
+                        Err(HandleLeaderTimerError::UnexpectedMissingLogEntry(index)) => {
+                            slog::error!(self.logger, "Wtf! LeaderStateTracker is tracking index {:?}, but entry is missing from disk.", index);
+                        }
+                        Err(HandleLeaderTimerError::LeaderStateMissingPeer {
+                                missing_peer,
+                                cluster_tracker_peers,
+                                leader_state_tracker_peers,
+                        }) => {
+                            slog::error!(
+                                self.logger,
+                                "Wtf. Replica '{:?}' is present in ClusterTracker but missing in LeaderStateTracker. ClusterTracker peers [{:?}]; LeaderStateTracker peers: [{:?}]",
+                                missing_peer,
+                                cluster_tracker_peers,
+                                leader_state_tracker_peers,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
-    fn new_append_entries_request(&self) -> ProtoAppendEntriesReq {
+    fn try_spawn_append_entries(&self, leader_state: &LeaderStateTracker, peer: &Peer) -> Result<(), HandleLeaderTimerError> {
+        let peer_log_state = leader_state.peer_state(peer.metadata.replica_id())
+            .ok_or_else(|| HandleLeaderTimerError::LeaderStateMissingPeer {
+                missing_peer: peer.metadata.replica_id().clone(),
+                cluster_tracker_peers: self.cluster_tracker.peer_ids(),
+                leader_state_tracker_peers: leader_state.peer_ids()
+            })?;
+
+        let proto_request = self.new_append_entries_request(peer_log_state)?;
+
+        tokio::task::spawn(Self::call_peer_append_entries(
+            self.logger.clone(),
+            peer.client.clone(),
+            peer.metadata.replica_id().clone(),
+            proto_request,
+            self.actor_client.clone(),
+        ));
+
+        Ok(())
+    }
+
+    fn new_append_entries_request(&self, peer_log_state: &PeerLogState) -> Result<ProtoAppendEntriesReq, HandleLeaderTimerError> {
+        let (next_index, opt_previous_index) = peer_log_state.next_and_previous_index();
+        let opt_previous_log_entry_metadata = match opt_previous_index {
+            None => None,
+            Some(previous_index) => {
+                match self.commit_log.read(previous_index) {
+                    Ok(Some(entry)) => Some((entry.term, previous_index)),
+                    Ok(None) => return Err(HandleLeaderTimerError::UnexpectedMissingLogEntry(previous_index)),
+                    Err(e) => return Err(HandleLeaderTimerError::DiskRead(previous_index, e)),
+                }
+            }
+        };
+
+        // Currently, we just send 1 new entry at a time.
+        let new_entries = match self.commit_log.read(next_index) {
+            Ok(Some(entry)) => vec![entry],
+            Ok(None) => Vec::new(),
+            Err(e) => return Err(HandleLeaderTimerError::DiskRead(next_index, e)),
+        };
+
+        Ok(self.build_append_entries_request(opt_previous_log_entry_metadata, new_entries))
+    }
+
+    // This is the infallible parts of creating the request object.
+    fn build_append_entries_request(
+        &self,
+        previous_log_entry_metadata: Option<(Term, Index)>,
+        new_entries: Vec<RaftCommitLogEntry>,
+    ) -> ProtoAppendEntriesReq {
         let current_term = self.local_state.current_term().as_u64();
         let commit_index = match self.commit_log.commit_index() {
             None => 0,
             Some(ci) => ci.as_u64(),
         };
-        let (previous_log_entry_term, previous_log_entry_index) = match self.commit_log.latest_entry() {
+
+        let (previous_log_entry_term, previous_log_entry_index) = match previous_log_entry_metadata {
             None => (0, 0),
             Some((term, idx)) => (term.as_u64(), idx.as_u64()),
         };
 
-        // TODO:1 Add locally buffered entries. For now, we're just doing empty heartbeats.
-        let new_entries = Vec::new();
+        let new_entries = new_entries.into_iter()
+            .map(|entry| ProtoLogEntry{
+                term: entry.term.as_u64(),
+                data: entry.data,
+            })
+            .collect();
 
         ProtoAppendEntriesReq {
             client_node_id: self.my_replica_id.clone().into_inner(),
@@ -492,14 +567,14 @@ where
     pub fn handle_follower_timeout(&mut self) {
         let new_term = self.local_state.increment_term_and_vote_for_self();
         self.election_state
-            .transition_to_candidate(new_term, self.cluster_members.num_voting_replicas());
+            .transition_to_candidate(new_term, self.cluster_tracker.num_voting_replicas());
         slog::info!(
             self.logger,
             "Timed out as follower. Changed to candidate. Election state: {:?}",
             self.election_state
         );
 
-        for peer in self.cluster_members.iter_peers() {
+        for peer in self.cluster_tracker.iter_peers() {
             // TODO:1.5 add RequestId to remote call
             tokio::task::spawn(Self::call_peer_request_vote(
                 self.logger.clone(),
@@ -570,4 +645,14 @@ where
 
         callback.notify_request_vote_reply_from_peer(callback_input).await;
     }
+}
+
+enum HandleLeaderTimerError {
+    DiskRead(Index, io::Error),
+    UnexpectedMissingLogEntry(Index),
+    LeaderStateMissingPeer {
+        missing_peer: ReplicaId,
+        cluster_tracker_peers: HashSet<ReplicaId>,
+        leader_state_tracker_peers: HashSet<ReplicaId>
+    },
 }

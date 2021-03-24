@@ -70,7 +70,7 @@ where
 
     /// Remove anything starting at `index` and later.
     pub fn truncate(&mut self, index: Index) -> Result<(), io::Error> {
-        let new_latest_entry_index = index.minus(1);
+        let new_latest_entry_index = index.minus(1); // TODO:1.5 panic risk, fix it
         let new_latest_entry_metadata = self
             .log
             .read(new_latest_entry_index)?

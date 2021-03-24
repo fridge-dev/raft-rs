@@ -28,7 +28,7 @@ impl Index {
     }
 
     pub fn as_u64(&self) -> u64 {
-        self.0 .0
+        self.0.0
     }
 
     pub fn plus(&self, delta: u64) -> Index {
@@ -37,6 +37,15 @@ impl Index {
 
     pub fn minus(&self, delta: u64) -> Index {
         Index::new(self.as_u64() - delta)
+    }
+
+    pub fn checked_minus(&self, delta: u64) -> Option<Index> {
+        let new_value = self.as_u64() - delta;
+        if new_value > 0 {
+            Some(Index::new(new_value))
+        } else {
+            None
+        }
     }
 }
 

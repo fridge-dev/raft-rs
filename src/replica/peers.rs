@@ -1,6 +1,6 @@
 use crate::replica::peer_client::RaftClient;
 use std::collections::hash_map::Values;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 use std::net::Ipv4Addr;
@@ -63,14 +63,14 @@ pub struct Peer {
     pub client: RaftClient,
 }
 
-/// PeerTracker is the group of replicas participating in a single instance of raft together.
-pub struct PeerTracker {
+/// ClusterTracker is the group of replicas participating in a single instance of raft together.
+pub struct ClusterTracker {
     my_replica_metadata: ReplicaMetadata,
     peers: HashMap<ReplicaId, Peer>,
 }
 
-impl PeerTracker {
-    pub async fn create_valid_peer_tracker(
+impl ClusterTracker {
+    pub async fn create_valid_cluster(
         logger: slog::Logger,
         my_replica_metadata: ReplicaMetadata,
         peer_replica_metadata: Vec<ReplicaMetadata>,
@@ -82,9 +82,9 @@ impl PeerTracker {
             return Err(InvalidCluster::DuplicateReplicaId(my_replica_metadata.id.into_inner()));
         }
 
-        let peers = PeerTracker::create_peers(logger, cluster_members_by_id).await?;
+        let peers = ClusterTracker::create_peers(logger, cluster_members_by_id).await?;
 
-        Ok(PeerTracker {
+        Ok(ClusterTracker {
             my_replica_metadata,
             peers,
         })
@@ -128,10 +128,6 @@ impl PeerTracker {
         &self.my_replica_metadata.id
     }
 
-    pub fn get_metadata(&self, id: &ReplicaId) -> Option<&ReplicaMetadata> {
-        self.peers.get(id).map(|peer| &peer.metadata)
-    }
-
     pub fn contains_member(&self, id: &ReplicaId) -> bool {
         self.peers.contains_key(id)
     }
@@ -141,8 +137,16 @@ impl PeerTracker {
         self.peers.values()
     }
 
+    pub fn peer_ids(&self) -> HashSet<ReplicaId> {
+        self.peers.keys().cloned().collect()
+    }
+
     pub fn peer(&self, id: &ReplicaId) -> Option<&Peer> {
         self.peers.get(id)
+    }
+
+    pub fn metadata(&self, id: &ReplicaId) -> Option<&ReplicaMetadata> {
+        self.peers.get(id).map(|peer| &peer.metadata)
     }
 
     /// `num_voting_replicas` returns the total number of voting replicas (including self) to
