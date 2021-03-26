@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use chrono::Utc;
 use raft;
+use raft::RaftOptions;
 use slog::Drain;
 use std::collections::HashMap;
 use std::error::Error;
@@ -74,9 +75,12 @@ fn config(id: usize, num_members: usize) -> raft::RaftClientConfig {
             my_replica_id: repl_id(id),
             cluster_members,
         },
-        leader_heartbeat_duration: Duration::from_millis(3000),
-        follower_min_timeout: Duration::from_millis(5000),
-        follower_max_timeout: Duration::from_millis(15000),
+        options: RaftOptions {
+            leader_heartbeat_duration: Some(Duration::from_millis(3000)),
+            follower_min_timeout: Some(Duration::from_millis(5000)),
+            follower_max_timeout: Some(Duration::from_millis(10000)),
+            ..RaftOptions::default()
+        },
     }
 }
 

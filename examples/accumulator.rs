@@ -84,6 +84,7 @@ fn create_root_logger_for_stdout(replica_id: String) -> slog::Logger {
 
 mod accumulator_impl {
     use bytes::{Buf, BufMut, Bytes, BytesMut};
+    use raft::RaftOptions;
     use std::collections::HashMap;
     use std::error::Error;
     use tokio::time::Duration;
@@ -100,9 +101,7 @@ mod accumulator_impl {
                 commit_log_directory: "/raft".to_string(),
                 info_logger: logger,
                 cluster_info,
-                leader_heartbeat_duration: Duration::from_millis(100),
-                follower_min_timeout: Duration::from_millis(500),
-                follower_max_timeout: Duration::from_millis(1500),
+                options: RaftOptions::default(),
             })
             .await?;
 

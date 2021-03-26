@@ -1,9 +1,11 @@
 use crate::actor::{ActorClient, ReplicaActor};
 use crate::api::client;
+use crate::api::configuration::RaftOptionsValidated;
 use crate::commitlog::InMemoryLog;
 use crate::replica::{ClusterTracker, Replica, ReplicaConfig, VolatileLocalState};
 use crate::server::RpcServer;
 use crate::{api, replica, CommitStream, RaftClientConfig, ReplicatedLog};
+use std::convert::TryFrom;
 use std::error::Error;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
@@ -21,15 +23,17 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     let (actor_queue_tx, actor_queue_rx) = mpsc::channel(10);
     let actor_client = ActorClient::new(actor_queue_tx);
 
+    let options = RaftOptionsValidated::try_from(config.options)?;
+
     let replica = Replica::new(ReplicaConfig {
         cluster_tracker,
         commit_log,
         local_state,
         commit_stream_publisher,
         actor_client: actor_client.clone(),
-        leader_heartbeat_duration: config.leader_heartbeat_duration,
-        follower_min_timeout: config.follower_min_timeout,
-        follower_max_timeout: config.follower_max_timeout,
+        leader_heartbeat_duration: options.leader_heartbeat_duration,
+        follower_min_timeout: options.follower_min_timeout,
+        follower_max_timeout: options.follower_max_timeout,
         logger: root_logger.clone(),
     });
 
@@ -58,6 +62,8 @@ pub struct CreatedClient {
 pub enum ClientCreationError {
     #[error("Invalid cluster info")]
     InvalidClusterInfo(Box<dyn Error>),
+    #[error("Illegal options for configuring client: {0}")]
+    IllegalClientOptions(String),
     #[error("Log initialization failure")]
     LogInitialization(io::Error),
     // We will need to relax this later when adding membership changes.

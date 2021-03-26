@@ -13,6 +13,7 @@ pub use client::StartReplicationOutput;
 pub use configuration::ClusterInfo;
 pub use configuration::MemberInfo;
 pub use configuration::RaftClientConfig;
+pub use configuration::RaftOptions;
 pub use factory::create_raft_client;
 
 // So Replica can access commit stream.
