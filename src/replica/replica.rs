@@ -3,7 +3,7 @@ use crate::api;
 use crate::commitlog::{Index, Log};
 use crate::grpc::{
     proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
-    ProtoAppendEntriesReq, ProtoRequestVoteReq,
+    ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq,
 };
 use crate::replica::commit_log::{RaftCommitLogEntry, RaftLog};
 use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState};
@@ -15,10 +15,14 @@ use crate::replica::replica_api::{
     EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, RequestVoteError,
     RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
 };
-use crate::replica::{AppendEntriesReplyFromPeerDescriptor, LeaderLogState, RequestVoteResult};
+use crate::replica::{
+    AppendEntriesReplyFromPeerDescriptor, AppendEntriesReplyFromPeerError, LeaderLogState, RequestVoteResult,
+};
 use std::collections::HashSet;
 use std::{cmp, io};
+use tokio::time::error::Elapsed;
 use tokio::time::Duration;
+use tonic::Status;
 
 pub struct ReplicaConfig<L, S>
 where
@@ -491,57 +495,59 @@ where
         let rpc_reply = tokio::time::timeout(rpc_timeout, peer_client.append_entries(rpc_request)).await;
         slog::debug!(logger, "ClientWire - {:?}", rpc_reply);
 
-        // TODO:1 consider moving all logging statements to callback handler.
-        let fail = match rpc_reply {
+        let callback_input = AppendEntriesReplyFromPeer {
+            descriptor,
+            result: Self::convert_append_entries_rpc_reply(rpc_reply),
+        };
+
+        callback.notify_append_entries_reply_from_peer(callback_input).await;
+    }
+
+    fn convert_append_entries_rpc_reply(
+        rpc_reply: Result<Result<ProtoAppendEntriesResult, Status>, Elapsed>,
+    ) -> Result<(), AppendEntriesReplyFromPeerError> {
+        match rpc_reply {
             Ok(Ok(rpc_result)) => match rpc_result.result {
-                Some(proto_append_entries_result::Result::Ok(_)) => false,
+                Some(proto_append_entries_result::Result::Ok(_)) => Ok(()),
                 Some(proto_append_entries_result::Result::Err(err)) => {
                     match err.err {
                         Some(proto_append_entries_error::Err::ServerFault(payload)) => {
-                            slog::warn!(logger, "Server returned failure: {:?}", payload.message);
+                            Err(AppendEntriesReplyFromPeerError::RetryableFailure(format!(
+                                "Explicit server fault: {:?}",
+                                payload.message
+                            )))
                         }
                         Some(proto_append_entries_error::Err::StaleTerm(payload)) => {
-                            slog::info!(
-                                logger,
-                                "Received outdated term failure. New term: {:?}",
-                                payload.current_term
-                            );
+                            Err(AppendEntriesReplyFromPeerError::StaleTerm {
+                                new_term: Term::new(payload.current_term),
+                            })
                         }
                         Some(proto_append_entries_error::Err::MissingLog(_)) => {
-                            slog::info!(logger, "Server missing log.");
+                            Err(AppendEntriesReplyFromPeerError::PeerMissingPreviousLogEntry)
                         }
                         Some(proto_append_entries_error::Err::ClientNotInCluster(_)) => {
-                            slog::info!(logger, "We're not in the cluster anymore.");
+                            // Retry in case peer is out of date. Not expecting this in practice.
+                            Err(AppendEntriesReplyFromPeerError::RetryableFailure(
+                                "Peer doesn't think we're in the cluster. Wtf?".into(),
+                            ))
                         }
-                        None => {
-                            slog::warn!(logger, "Malformed AppendEntries reply");
-                        }
+                        None => Err(AppendEntriesReplyFromPeerError::RetryableFailure(
+                            "Malformed AppendEntries Err".into(),
+                        )),
                     }
-
-                    true
                 }
-                None => {
-                    slog::error!(logger, "Malformed AppendEntries reply");
-                    true
-                }
+                None => Err(AppendEntriesReplyFromPeerError::RetryableFailure(
+                    "Malformed AppendEntries Result".into(),
+                )),
             },
-            Ok(Err(rpc_status)) => {
-                slog::error!(
-                    logger,
-                    "Un-modeled failure from AppendEntries RPC call: {:?}",
-                    rpc_status
-                );
-                true
-            }
-            Err(_timeout) => {
-                slog::error!(logger, "Timed out calling AppendEntries");
-                true
-            }
-        };
-
-        let callback_input = AppendEntriesReplyFromPeer { descriptor, fail };
-
-        callback.notify_append_entries_reply_from_peer(callback_input).await;
+            Ok(Err(rpc_status)) => Err(AppendEntriesReplyFromPeerError::RetryableFailure(format!(
+                "Un-modeled failure from AppendEntries RPC call: {:?}",
+                rpc_status
+            ))),
+            Err(_timeout) => Err(AppendEntriesReplyFromPeerError::RetryableFailure(
+                "Timed out calling AppendEntries".into(),
+            )),
+        }
     }
 
     pub fn handle_follower_timeout(&mut self) {

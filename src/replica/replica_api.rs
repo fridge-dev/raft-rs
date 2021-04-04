@@ -145,8 +145,7 @@ pub enum RequestVoteResult {
 #[derive(Debug)]
 pub struct AppendEntriesReplyFromPeer {
     pub descriptor: AppendEntriesReplyFromPeerDescriptor,
-    // TODO:1 more sophisticated err handle
-    pub fail: bool,
+    pub result: Result<(), AppendEntriesReplyFromPeerError>,
 }
 
 // This is basically info about the original request
@@ -157,4 +156,11 @@ pub struct AppendEntriesReplyFromPeerDescriptor {
     pub seq_no: u64,
     pub previous_log_entry_index: Option<Index>,
     pub num_log_entries: usize,
+}
+
+#[derive(Debug)]
+pub enum AppendEntriesReplyFromPeerError {
+    PeerMissingPreviousLogEntry,
+    RetryableFailure(String),
+    StaleTerm { new_term: Term },
 }
