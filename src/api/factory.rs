@@ -26,6 +26,7 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     let options = RaftOptionsValidated::try_from(config.options)?;
 
     let replica = Replica::new(ReplicaConfig {
+        logger: root_logger.clone(),
         cluster_tracker,
         commit_log,
         local_state,
@@ -34,7 +35,7 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
         leader_heartbeat_duration: options.leader_heartbeat_duration,
         follower_min_timeout: options.follower_min_timeout,
         follower_max_timeout: options.follower_max_timeout,
-        logger: root_logger.clone(),
+        append_entries_timeout: options.leader_append_entries_timeout,
     });
 
     let replica_actor = ReplicaActor::new(root_logger.clone(), actor_queue_rx, replica);

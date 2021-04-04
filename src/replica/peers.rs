@@ -58,6 +58,7 @@ impl ReplicaMetadata {
 }
 
 /// Peer is a replica that is not me.
+#[derive(Clone)] // TODO:1 can remove after leader timer is per-peer
 pub struct Peer {
     pub metadata: ReplicaMetadata,
     pub client: RaftClient,
@@ -135,6 +136,11 @@ impl ClusterTracker {
     // Exposing HashMap type, but experimenting with this style.
     pub fn iter_peers(&self) -> Values<'_, ReplicaId, Peer> {
         self.peers.values()
+    }
+
+    // TODO:1 must remove after leader timer is per-peer
+    pub fn cloned_peers(&self) -> Vec<Peer> {
+        self.peers.values().cloned().collect()
     }
 
     pub fn peer_ids(&self) -> HashSet<ReplicaId> {

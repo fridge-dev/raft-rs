@@ -1,7 +1,7 @@
 use crate::commitlog::{Entry, Index, Log};
-use std::{io, thread};
 use std::marker::PhantomData;
 use std::time::Duration;
+use std::{io, thread};
 
 // I am focusing on learning raft's consensus algorithm, not strictly about exactly how to
 // persist the data durably. I will theoretically model it here.

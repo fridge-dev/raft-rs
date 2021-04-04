@@ -4,6 +4,7 @@ use std::ops::RangeInclusive;
 use tokio::time;
 use tokio::time::{Duration, Instant};
 
+// TODO:1 do we need per-peer timer?
 pub struct LeaderTimerHandle {
     // will be dropped
     _stopper: stop_signal::Stopper,

@@ -1,27 +1,31 @@
 use crate::actor::ActorClient;
 use crate::api;
 use crate::commitlog::{Index, Log};
-use crate::grpc::{proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result, ProtoAppendEntriesReq, ProtoRequestVoteReq, ProtoLogEntry};
+use crate::grpc::{
+    proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
+    ProtoAppendEntriesReq, ProtoRequestVoteReq,
+};
 use crate::replica::commit_log::{RaftCommitLogEntry, RaftLog};
-use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState, LeaderStateTracker, PeerLogState};
+use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peer_client::RaftClient;
-use crate::replica::peers::{ClusterTracker, ReplicaId, Peer};
+use crate::replica::peers::{ClusterTracker, Peer, ReplicaId};
 use crate::replica::replica_api::{
     AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesReplyFromPeer,
     EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, RequestVoteError,
     RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
 };
-use crate::replica::{LeaderLogState, RequestVoteResult};
+use crate::replica::{AppendEntriesReplyFromPeerDescriptor, LeaderLogState, RequestVoteResult};
+use std::collections::HashSet;
 use std::{cmp, io};
 use tokio::time::Duration;
-use std::collections::HashSet;
 
 pub struct ReplicaConfig<L, S>
 where
     L: Log<RaftCommitLogEntry>,
     S: PersistentLocalState,
 {
+    pub logger: slog::Logger,
     pub cluster_tracker: ClusterTracker,
     pub commit_log: L,
     pub local_state: S,
@@ -30,7 +34,7 @@ where
     pub leader_heartbeat_duration: Duration,
     pub follower_min_timeout: Duration,
     pub follower_max_timeout: Duration,
-    pub logger: slog::Logger,
+    pub append_entries_timeout: Duration,
 }
 
 pub struct Replica<L, S>
@@ -38,13 +42,14 @@ where
     L: Log<RaftCommitLogEntry>,
     S: PersistentLocalState,
 {
+    logger: slog::Logger,
     my_replica_id: ReplicaId,
     cluster_tracker: ClusterTracker,
     local_state: S,
     election_state: ElectionState,
     commit_log: RaftLog<L>,
     actor_client: ActorClient,
-    logger: slog::Logger,
+    append_entries_timeout: Duration,
 }
 
 impl<L, S> Replica<L, S>
@@ -66,13 +71,14 @@ where
         let commit_log = RaftLog::new(config.logger.clone(), config.commit_log, config.commit_stream_publisher);
 
         Replica {
+            logger: config.logger,
             my_replica_id,
             cluster_tracker: config.cluster_tracker,
             local_state: config.local_state,
             election_state,
             commit_log,
             actor_client: config.actor_client,
-            logger: config.logger,
+            append_entries_timeout: config.append_entries_timeout,
         }
     }
 
@@ -82,7 +88,7 @@ where
     ) -> Result<EnqueueForReplicationOutput, EnqueueForReplicationError> {
         // Leader check
         match self.election_state.current_leader() {
-            CurrentLeader::Me => { /* carry on */ },
+            CurrentLeader::Me => { /* carry on */ }
             CurrentLeader::Other(leader_id) => match self.cluster_tracker.metadata(&leader_id) {
                 Some(leader) => {
                     return Err(EnqueueForReplicationError::LeaderRedirect {
@@ -99,8 +105,10 @@ where
             },
             CurrentLeader::Unknown => {
                 return Err(EnqueueForReplicationError::NoLeader);
-            },
+            }
         }
+
+        // TODO:2 throttle based on number of uncommitted entries.
 
         // > If command received from client: append entry to local log,
         // > respond after entry applied to state machine (§5.3)
@@ -113,6 +121,8 @@ where
             .commit_log
             .append(new_entry)
             .map_err(|e| EnqueueForReplicationError::LocalIoError(e))?;
+
+        // TODO:3 Eagerly trigger peer AppendEntries timers that are waiting.
 
         Ok(EnqueueForReplicationOutput {
             enqueued_term: term,
@@ -231,7 +241,9 @@ where
     pub fn handle_request_vote_reply_from_peer(&mut self, reply: RequestVoteReplyFromPeer) {
         match reply.result {
             RequestVoteResult::VoteGranted => {
-                let received_majority_vote = self.election_state.add_vote_if_candidate(&self.logger, reply.term, reply.peer_id);
+                let received_majority_vote =
+                    self.election_state
+                        .add_vote_if_candidate(&self.logger, reply.term, reply.peer_id);
                 if received_majority_vote {
                     self.election_state.transition_to_leader(
                         self.cluster_tracker.peer_ids(),
@@ -387,137 +399,101 @@ where
     pub fn handle_append_entries_reply_from_peer(&mut self, reply: AppendEntriesReplyFromPeer) {
         slog::info!(self.logger, "AppendEntries result: {:?}", reply);
 
+        // match self.election_state.leader_state_mut() {
+        //     None => { /* Not leader anymore */ },
+        //     Some(leader_state) => {
+        //         reply.peer_id
+        //     },
+        // }
+        // TODO:1 track replication
         // let appended_index = Index::new(1);
         // self.commit_log.ratchet_fwd_commit_index(appended_index);
         // self.commit_log.apply_all_committed_entries();
     }
 
     pub fn handle_leader_timer(&mut self) {
-        match self.election_state.leader_state() {
-            None => { /* Not leader anymore */ }
-            Some(leader_state) => {
-                for peer in self.cluster_tracker.iter_peers() {
-                    // Don't terminate iteration of peers early to ensure we retain leadership
-                    // in case a leader gets corrupted state related to a single peer. Maybe
-                    // change this in the future, who knows.
-                    match self.try_spawn_append_entries(leader_state, peer) {
-                        Ok(_) => {}
-                        Err(HandleLeaderTimerError::DiskRead(index, ioe)) => {
-                            slog::error!(self.logger, "Failed to read entry at index {:?}: {:?}", index, ioe);
-                        }
-                        Err(HandleLeaderTimerError::UnexpectedMissingLogEntry(index)) => {
-                            slog::error!(self.logger, "Wtf! LeaderStateTracker is tracking index {:?}, but entry is missing from disk.", index);
-                        }
-                        Err(HandleLeaderTimerError::LeaderStateMissingPeer {
-                                missing_peer,
-                                cluster_tracker_peers,
-                                leader_state_tracker_peers,
-                        }) => {
-                            slog::error!(
-                                self.logger,
-                                "Wtf. Replica '{:?}' is present in ClusterTracker but missing in LeaderStateTracker. ClusterTracker peers [{:?}]; LeaderStateTracker peers: [{:?}]",
-                                missing_peer,
-                                cluster_tracker_peers,
-                                leader_state_tracker_peers,
-                            )
-                        }
-                    }
-                }
+        // We don't terminate iteration of peers early to ensure we retain leadership
+        // in case a leader gets corrupted state related to a single peer.
+        //
+        // TODO:1 change leader timer to be per-peer, not global broadcast.
+        let peers_iter = self.cluster_tracker.cloned_peers();
+        for peer in peers_iter {
+            self.handle_leader_timer_for_peer(&peer)
+        }
+    }
+
+    fn handle_leader_timer_for_peer(&mut self, peer: &Peer) {
+        match self.try_handle_leader_timer_for_peer(peer) {
+            Ok(_) => {}
+            Err(HandleLeaderTimerError::NoLongerLeader) => {
+                slog::info!(self.logger, "Received leader timer event but no longer leader.")
+            }
+            Err(HandleLeaderTimerError::DiskRead(index, ioe)) => {
+                slog::error!(self.logger, "Failed to read entry at index {:?}: {:?}", index, ioe);
+            }
+            Err(HandleLeaderTimerError::UnexpectedMissingLogEntry(index)) => {
+                slog::error!(
+                    self.logger,
+                    "Wtf! LeaderStateTracker is tracking index {:?}, but entry is missing from disk.",
+                    index
+                );
+            }
+            Err(HandleLeaderTimerError::LeaderStateMissingPeer {
+                missing_peer,
+                leader_state_tracker_peers,
+            }) => {
+                slog::error!(
+                    self.logger,
+                    "Wtf. Replica '{:?}' is present in ClusterTracker but missing in LeaderStateTracker. LeaderStateTracker peers: [{:?}]",
+                    missing_peer,
+                    leader_state_tracker_peers,
+                )
             }
         }
     }
 
-    fn try_spawn_append_entries(&self, leader_state: &LeaderStateTracker, peer: &Peer) -> Result<(), HandleLeaderTimerError> {
-        let peer_log_state = leader_state.peer_state(peer.metadata.replica_id())
-            .ok_or_else(|| HandleLeaderTimerError::LeaderStateMissingPeer {
-                missing_peer: peer.metadata.replica_id().clone(),
-                cluster_tracker_peers: self.cluster_tracker.peer_ids(),
-                leader_state_tracker_peers: leader_state.peer_ids()
-            })?;
+    fn try_handle_leader_timer_for_peer(&mut self, peer: &Peer) -> Result<(), HandleLeaderTimerError> {
+        match self.election_state.leader_state_mut() {
+            None => Err(HandleLeaderTimerError::NoLongerLeader),
+            Some(leader_state) => {
+                let (proto_request, descriptor) = leader_timer_handler::new_append_entries_request(
+                    self.local_state.current_term(),
+                    self.my_replica_id.clone(),
+                    peer.metadata.replica_id().clone(),
+                    leader_state,
+                    &self.commit_log,
+                )?;
 
-        let proto_request = self.new_append_entries_request(peer_log_state)?;
+                // TODO:1.5 add RequestId to remote call
+                tokio::task::spawn(Self::call_peer_append_entries(
+                    self.logger.clone(),
+                    peer.client.clone(),
+                    proto_request,
+                    self.append_entries_timeout,
+                    self.actor_client.clone(),
+                    descriptor,
+                ));
 
-        tokio::task::spawn(Self::call_peer_append_entries(
-            self.logger.clone(),
-            peer.client.clone(),
-            peer.metadata.replica_id().clone(),
-            proto_request,
-            self.actor_client.clone(),
-        ));
-
-        Ok(())
-    }
-
-    fn new_append_entries_request(&self, peer_log_state: &PeerLogState) -> Result<ProtoAppendEntriesReq, HandleLeaderTimerError> {
-        let (next_index, opt_previous_index) = peer_log_state.next_and_previous_index();
-        let opt_previous_log_entry_metadata = match opt_previous_index {
-            None => None,
-            Some(previous_index) => {
-                match self.commit_log.read(previous_index) {
-                    Ok(Some(entry)) => Some((entry.term, previous_index)),
-                    Ok(None) => return Err(HandleLeaderTimerError::UnexpectedMissingLogEntry(previous_index)),
-                    Err(e) => return Err(HandleLeaderTimerError::DiskRead(previous_index, e)),
-                }
+                Ok(())
             }
-        };
-
-        // Currently, we just send 1 new entry at a time.
-        let new_entries = match self.commit_log.read(next_index) {
-            Ok(Some(entry)) => vec![entry],
-            Ok(None) => Vec::new(),
-            Err(e) => return Err(HandleLeaderTimerError::DiskRead(next_index, e)),
-        };
-
-        Ok(self.build_append_entries_request(opt_previous_log_entry_metadata, new_entries))
-    }
-
-    // This is the infallible parts of creating the request object.
-    fn build_append_entries_request(
-        &self,
-        previous_log_entry_metadata: Option<(Term, Index)>,
-        new_entries: Vec<RaftCommitLogEntry>,
-    ) -> ProtoAppendEntriesReq {
-        let current_term = self.local_state.current_term().as_u64();
-        let commit_index = match self.commit_log.commit_index() {
-            None => 0,
-            Some(ci) => ci.as_u64(),
-        };
-
-        let (previous_log_entry_term, previous_log_entry_index) = match previous_log_entry_metadata {
-            None => (0, 0),
-            Some((term, idx)) => (term.as_u64(), idx.as_u64()),
-        };
-
-        let new_entries = new_entries.into_iter()
-            .map(|entry| ProtoLogEntry{
-                term: entry.term.as_u64(),
-                data: entry.data,
-            })
-            .collect();
-
-        ProtoAppendEntriesReq {
-            client_node_id: self.my_replica_id.clone().into_inner(),
-            term: current_term,
-            commit_index,
-            previous_log_entry_term,
-            previous_log_entry_index,
-            new_entries,
         }
     }
 
     async fn call_peer_append_entries(
         logger: slog::Logger,
         mut peer_client: RaftClient,
-        peer_id: ReplicaId,
         rpc_request: ProtoAppendEntriesReq,
+        rpc_timeout: Duration,
         callback: ActorClient,
+        descriptor: AppendEntriesReplyFromPeerDescriptor,
     ) {
         slog::debug!(logger, "ClientWire - {:?}", rpc_request);
-        let rpc_reply = peer_client.append_entries(rpc_request).await;
+        let rpc_reply = tokio::time::timeout(rpc_timeout, peer_client.append_entries(rpc_request)).await;
         slog::debug!(logger, "ClientWire - {:?}", rpc_reply);
 
+        // TODO:1 consider moving all logging statements to callback handler.
         let fail = match rpc_reply {
-            Ok(rpc_result) => match rpc_result.result {
+            Ok(Ok(rpc_result)) => match rpc_result.result {
                 Some(proto_append_entries_result::Result::Ok(_)) => false,
                 Some(proto_append_entries_result::Result::Err(err)) => {
                     match err.err {
@@ -545,21 +521,25 @@ where
                     true
                 }
                 None => {
-                    slog::warn!(logger, "Malformed AppendEntries reply");
+                    slog::error!(logger, "Malformed AppendEntries reply");
                     true
                 }
             },
-            Err(rpc_status) => {
-                slog::warn!(
+            Ok(Err(rpc_status)) => {
+                slog::error!(
                     logger,
                     "Un-modeled failure from AppendEntries RPC call: {:?}",
                     rpc_status
                 );
                 true
             }
+            Err(_timeout) => {
+                slog::error!(logger, "Timed out calling AppendEntries");
+                true
+            }
         };
 
-        let callback_input = AppendEntriesReplyFromPeer { peer_id, fail };
+        let callback_input = AppendEntriesReplyFromPeer { descriptor, fail };
 
         callback.notify_append_entries_reply_from_peer(callback_input).await;
     }
@@ -571,7 +551,7 @@ where
         slog::info!(
             self.logger,
             "Timed out as follower. Changed to candidate. Election state: {:?}",
-            self.election_state
+            self.election_state,
         );
 
         for peer in self.cluster_tracker.iter_peers() {
@@ -648,11 +628,118 @@ where
 }
 
 enum HandleLeaderTimerError {
+    NoLongerLeader,
     DiskRead(Index, io::Error),
     UnexpectedMissingLogEntry(Index),
     LeaderStateMissingPeer {
         missing_peer: ReplicaId,
-        cluster_tracker_peers: HashSet<ReplicaId>,
-        leader_state_tracker_peers: HashSet<ReplicaId>
+        leader_state_tracker_peers: HashSet<ReplicaId>,
     },
+}
+
+mod leader_timer_handler {
+    use crate::commitlog::{Index, Log};
+    use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
+    use crate::replica::commit_log::RaftLog;
+    use crate::replica::election::LeaderStateTracker;
+    use crate::replica::replica::HandleLeaderTimerError;
+    use crate::replica::{AppendEntriesReplyFromPeerDescriptor, RaftCommitLogEntry, ReplicaId, Term};
+
+    pub(super) fn new_append_entries_request<'a, L>(
+        current_term: Term,
+        my_id: ReplicaId,
+        peer_id: ReplicaId,
+        leader_state: &'a mut LeaderStateTracker,
+        commit_log: &'a RaftLog<L>,
+    ) -> Result<(ProtoAppendEntriesReq, AppendEntriesReplyFromPeerDescriptor), HandleLeaderTimerError>
+    where
+        L: Log<RaftCommitLogEntry>,
+    {
+        let peer_state = match leader_state.peer_state_mut(&peer_id) {
+            Some(ps) => ps,
+            None => {
+                return Err(HandleLeaderTimerError::LeaderStateMissingPeer {
+                    missing_peer: peer_id,
+                    leader_state_tracker_peers: leader_state.peer_ids(),
+                });
+            }
+        };
+
+        let seq_no = peer_state.next_seq_no();
+
+        let (next_index, opt_previous_index) = peer_state.next_and_previous_log_index();
+        let opt_previous_log_entry_metadata = match opt_previous_index {
+            None => None,
+            Some(previous_index) => match commit_log.read(previous_index) {
+                Ok(Some(entry)) => Some((entry.term, previous_index)),
+                Ok(None) => return Err(HandleLeaderTimerError::UnexpectedMissingLogEntry(previous_index)),
+                Err(e) => return Err(HandleLeaderTimerError::DiskRead(previous_index, e)),
+            },
+        };
+
+        // Currently, we just send 1 new entry at a time.
+        // TODO:2 send multiple entries in one request.
+        let new_entries = match commit_log.read(next_index) {
+            Ok(Some(entry)) => vec![entry],
+            Ok(None) => Vec::new(),
+            Err(e) => return Err(HandleLeaderTimerError::DiskRead(next_index, e)),
+        };
+
+        Ok(build_append_entries_request(
+            current_term,
+            my_id,
+            peer_id,
+            seq_no,
+            opt_previous_log_entry_metadata,
+            commit_log.commit_index(),
+            new_entries,
+        ))
+    }
+
+    // This is the infallible parts of creating the request object.
+    fn build_append_entries_request(
+        current_term: Term,
+        my_id: ReplicaId,
+        peer_id: ReplicaId,
+        seq_no: u64,
+        previous_log_entry_metadata: Option<(Term, Index)>,
+        commit_index: Option<Index>,
+        new_entries: Vec<RaftCommitLogEntry>,
+    ) -> (ProtoAppendEntriesReq, AppendEntriesReplyFromPeerDescriptor) {
+        let previous_log_entry_index = previous_log_entry_metadata.map(|(_, idx)| idx);
+        let descriptor = AppendEntriesReplyFromPeerDescriptor {
+            peer_id,
+            term: current_term,
+            seq_no,
+            previous_log_entry_index,
+            num_log_entries: new_entries.len(),
+        };
+
+        let commit_index_u64 = match commit_index {
+            None => 0,
+            Some(ci) => ci.as_u64(),
+        };
+        let (previous_log_entry_term_u64, previous_log_entry_index_u64) = match previous_log_entry_metadata {
+            None => (0, 0),
+            Some((term, idx)) => (term.as_u64(), idx.as_u64()),
+        };
+        let new_entries = new_entries
+            .into_iter()
+            .map(|entry| ProtoLogEntry {
+                term: entry.term.as_u64(),
+                data: entry.data,
+            })
+            .collect();
+
+        let proto_req = ProtoAppendEntriesReq {
+            client_node_id: my_id.into_inner(),
+            term: current_term.as_u64(),
+            commit_index: commit_index_u64,
+            previous_log_entry_term: previous_log_entry_term_u64,
+            previous_log_entry_index: previous_log_entry_index_u64,
+            new_entries,
+        };
+
+        (proto_req, descriptor)
+    }
 }

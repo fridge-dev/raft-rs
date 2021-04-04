@@ -28,7 +28,7 @@ impl Index {
     }
 
     pub fn as_u64(&self) -> u64 {
-        self.0.0
+        self.0 .0
     }
 
     pub fn plus(&self, delta: u64) -> Index {

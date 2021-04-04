@@ -144,7 +144,17 @@ pub enum RequestVoteResult {
 
 #[derive(Debug)]
 pub struct AppendEntriesReplyFromPeer {
-    pub peer_id: ReplicaId,
+    pub descriptor: AppendEntriesReplyFromPeerDescriptor,
     // TODO:1 more sophisticated err handle
     pub fail: bool,
+}
+
+// This is basically info about the original request
+#[derive(Debug)]
+pub struct AppendEntriesReplyFromPeerDescriptor {
+    pub peer_id: ReplicaId,
+    pub term: Term,
+    pub seq_no: u64,
+    pub previous_log_entry_index: Option<Index>,
+    pub num_log_entries: usize,
 }

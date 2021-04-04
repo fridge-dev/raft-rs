@@ -95,12 +95,7 @@ impl ElectionState {
     }
 
     /// Return true if we've received a majority of votes.
-    pub fn add_vote_if_candidate(
-        &mut self,
-        logger: &slog::Logger,
-        term: Term,
-        vote_from: ReplicaId,
-    ) -> bool {
+    pub fn add_vote_if_candidate(&mut self, logger: &slog::Logger, term: Term, vote_from: ReplicaId) -> bool {
         if let State::Candidate(cs) = &mut self.state {
             if cs.term != term {
                 slog::info!(
@@ -140,14 +135,6 @@ impl ElectionState {
             cs.term == term
         } else {
             false
-        }
-    }
-
-    pub fn leader_state(&self) -> Option<&LeaderStateTracker> {
-        if let State::Leader(ls) = &self.state {
-            Some(&ls.tracker)
-        } else {
-            None
         }
     }
 
@@ -213,7 +200,7 @@ impl LeaderState {
     ) -> Self {
         let mut peer_state = HashMap::with_capacity(peer_ids.len());
         for peer_id in peer_ids {
-            peer_state.insert(peer_id, PeerLogState::new(previous_log_entry_index));
+            peer_state.insert(peer_id, PeerState::new(previous_log_entry_index));
         }
 
         LeaderState {
@@ -287,21 +274,19 @@ impl FollowerState {
 // ------- Leader state tracking -------
 
 pub struct LeaderStateTracker {
-    peer_state: HashMap<ReplicaId, PeerLogState>,
+    peer_state: HashMap<ReplicaId, PeerState>,
 }
 
 impl LeaderStateTracker {
-    fn new(peer_state: HashMap<ReplicaId, PeerLogState>) -> Self {
-        LeaderStateTracker {
-            peer_state,
-        }
+    fn new(peer_state: HashMap<ReplicaId, PeerState>) -> Self {
+        LeaderStateTracker { peer_state }
     }
 
-    pub fn peer_state(&self, peer_id: &ReplicaId) -> Option<&PeerLogState> {
+    pub fn peer_state(&self, peer_id: &ReplicaId) -> Option<&PeerState> {
         self.peer_state.get(peer_id)
     }
 
-    pub fn peer_state_mut(&mut self, peer_id: &ReplicaId) -> Option<&mut PeerLogState> {
+    pub fn peer_state_mut(&mut self, peer_id: &ReplicaId) -> Option<&mut PeerState> {
         self.peer_state.get_mut(peer_id)
     }
 
@@ -310,24 +295,54 @@ impl LeaderStateTracker {
     }
 }
 
-pub struct PeerLogState {
+pub struct PeerState {
     // > index of the next log entry to send to that server
     // > (initialized to leader last log index + 1)
     next: Index,
     // > index of highest log entry known to be replicated on server
     // > (initialized to 0, increases monotonically)
     matched: Option<Index>,
+
+    // SeqNo is a form of a logical clock that tracks a term leader's interactions with a peer. When
+    // a replica becomes leader, it initializes last sent/received to 0. Each time leader sends a
+    // request, it increments the last sent SeqNo and ensures the response will be associated with
+    // that SeqNo. If a leader receives a SeqNo from earlier than a previously received SeqNo, it
+    // discards it.
+    last_sent_seq_no: u64,
+    last_received_seq_no: u64,
 }
 
-impl PeerLogState {
+impl PeerState {
     fn new(previous_log_entry_index: Option<Index>) -> Self {
-        PeerLogState {
-            next: previous_log_entry_index.map(|i| i.plus(1)).unwrap_or_else(|| Index::start_index()),
+        PeerState {
+            next: previous_log_entry_index
+                .map(|i| i.plus(1))
+                .unwrap_or_else(|| Index::start_index()),
             matched: None,
+            last_sent_seq_no: 0,
+            last_received_seq_no: 0,
         }
     }
 
-    pub fn next_and_previous_index(&self) -> (Index, Option<Index>) {
+    pub fn next_and_previous_log_index(&self) -> (Index, Option<Index>) {
         (self.next, self.next.checked_minus(1))
+    }
+
+    pub fn has_outstanding_request(&self) -> bool {
+        self.last_received_seq_no < self.last_sent_seq_no
+    }
+
+    pub fn next_seq_no(&mut self) -> u64 {
+        self.last_sent_seq_no += 1;
+        self.last_sent_seq_no
+    }
+
+    pub fn received_seq_no(&mut self, received_seq_no: u64) -> Result<(), ()> {
+        if self.last_received_seq_no < received_seq_no && received_seq_no <= self.last_sent_seq_no {
+            self.last_received_seq_no = received_seq_no;
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
