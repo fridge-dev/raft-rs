@@ -432,6 +432,9 @@ where
             Err(HandleLeaderTimerError::NoLongerLeader) => {
                 slog::info!(self.logger, "Received leader timer event but no longer leader.")
             }
+            Err(HandleLeaderTimerError::PeerConcurrencyThrottle) => {
+                slog::warn!(self.logger, "Too many outstanding requests to peer {:?}", peer.metadata.replica_id())
+            }
             Err(HandleLeaderTimerError::DiskRead(index, ioe)) => {
                 slog::error!(self.logger, "Failed to read entry at index {:?}: {:?}", index, ioe);
             }
@@ -443,13 +446,12 @@ where
                 );
             }
             Err(HandleLeaderTimerError::LeaderStateMissingPeer {
-                missing_peer,
                 leader_state_tracker_peers,
             }) => {
                 slog::error!(
                     self.logger,
                     "Wtf. Replica '{:?}' is present in ClusterTracker but missing in LeaderStateTracker. LeaderStateTracker peers: [{:?}]",
-                    missing_peer,
+                    peer.metadata.replica_id(),
                     leader_state_tracker_peers,
                 )
             }
@@ -635,10 +637,10 @@ where
 
 enum HandleLeaderTimerError {
     NoLongerLeader,
+    PeerConcurrencyThrottle,
     DiskRead(Index, io::Error),
     UnexpectedMissingLogEntry(Index),
     LeaderStateMissingPeer {
-        missing_peer: ReplicaId,
         leader_state_tracker_peers: HashSet<ReplicaId>,
     },
 }
@@ -665,12 +667,17 @@ mod leader_timer_handler {
             Some(ps) => ps,
             None => {
                 return Err(HandleLeaderTimerError::LeaderStateMissingPeer {
-                    missing_peer: peer_id,
                     leader_state_tracker_peers: leader_state.peer_ids(),
                 });
             }
         };
 
+        // Simplicity vs throughput tradeoff. We're just going to allow 1 outstanding request per
+        // peer; no pipelining. This should not limit throughput too badly however, as we will still
+        // batch log entries. This will support my target use case of a low-volume (~1k RPS) service.
+        if peer_state.has_outstanding_request() {
+            return Err(HandleLeaderTimerError::PeerConcurrencyThrottle);
+        }
         let seq_no = peer_state.next_seq_no();
 
         let (next_index, opt_previous_index) = peer_state.next_and_previous_log_index();
@@ -691,44 +698,43 @@ mod leader_timer_handler {
             Err(e) => return Err(HandleLeaderTimerError::DiskRead(next_index, e)),
         };
 
-        Ok(build_append_entries_request(
+        let descriptor = AppendEntriesReplyFromPeerDescriptor {
+            peer_id,
+            term: current_term,
+            seq_no,
+            previous_log_entry_index: opt_previous_index,
+            num_log_entries: new_entries.len(),
+        };
+
+        let proto_request = build_append_entries_request(
             current_term,
             my_id,
-            peer_id,
-            seq_no,
             opt_previous_log_entry_metadata,
             commit_log.commit_index(),
             new_entries,
-        ))
+        );
+
+        Ok((proto_request, descriptor))
     }
 
     // This is the infallible parts of creating the request object.
     fn build_append_entries_request(
         current_term: Term,
         my_id: ReplicaId,
-        peer_id: ReplicaId,
-        seq_no: u64,
         previous_log_entry_metadata: Option<(Term, Index)>,
         commit_index: Option<Index>,
         new_entries: Vec<RaftCommitLogEntry>,
-    ) -> (ProtoAppendEntriesReq, AppendEntriesReplyFromPeerDescriptor) {
-        let previous_log_entry_index = previous_log_entry_metadata.map(|(_, idx)| idx);
-        let descriptor = AppendEntriesReplyFromPeerDescriptor {
-            peer_id,
-            term: current_term,
-            seq_no,
-            previous_log_entry_index,
-            num_log_entries: new_entries.len(),
-        };
-
+    ) -> ProtoAppendEntriesReq {
         let commit_index_u64 = match commit_index {
             None => 0,
             Some(ci) => ci.as_u64(),
         };
+
         let (previous_log_entry_term_u64, previous_log_entry_index_u64) = match previous_log_entry_metadata {
             None => (0, 0),
             Some((term, idx)) => (term.as_u64(), idx.as_u64()),
         };
+
         let new_entries = new_entries
             .into_iter()
             .map(|entry| ProtoLogEntry {
@@ -737,15 +743,13 @@ mod leader_timer_handler {
             })
             .collect();
 
-        let proto_req = ProtoAppendEntriesReq {
+        ProtoAppendEntriesReq {
             client_node_id: my_id.into_inner(),
             term: current_term.as_u64(),
             commit_index: commit_index_u64,
             previous_log_entry_term: previous_log_entry_term_u64,
             previous_log_entry_index: previous_log_entry_index_u64,
             new_entries,
-        };
-
-        (proto_req, descriptor)
+        }
     }
 }
