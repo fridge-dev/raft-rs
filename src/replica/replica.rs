@@ -6,7 +6,7 @@ use crate::grpc::{
     ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq,
 };
 use crate::replica::commit_log::{RaftCommitLogEntry, RaftLog};
-use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState};
+use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState, PeerStateUpdate};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peer_client::RaftClient;
 use crate::replica::peers::{ClusterTracker, Peer, ReplicaId};
@@ -216,13 +216,13 @@ where
         Ok(RequestVoteOutput { vote_granted: false })
     }
 
-    // > Raft determines which of two logs is more up-to-date
-    // > by comparing the index and term of the last entries in the
-    // > logs. If the logs have last entries with different terms, then
-    // > the log with the later term is more up-to-date. If the logs
-    // > end with the same term, then whichever log is longer is
-    // > more up-to-date.
     fn is_candidate_log_gte_mine(&self, candidate_last_entry: Option<(Term, Index)>) -> bool {
+        // > Raft determines which of two logs is more up-to-date
+        // > by comparing the index and term of the last entries in the
+        // > logs. If the logs have last entries with different terms, then
+        // > the log with the later term is more up-to-date. If the logs
+        // > end with the same term, then whichever log is longer is
+        // > more up-to-date.
         match (self.commit_log.latest_entry(), candidate_last_entry) {
             (None, None) => true,
             (Some(_), None) => false,
@@ -401,18 +401,119 @@ where
     }
 
     pub fn handle_append_entries_reply_from_peer(&mut self, reply: AppendEntriesReplyFromPeer) {
-        slog::info!(self.logger, "AppendEntries result: {:?}", reply);
+        let logger = self.logger.new(slog::o!("Peer" => format!("{:?}", reply.descriptor.peer_id), "SeqNo" => reply.descriptor.seq_no));
+        slog::debug!(logger, "AE reply from peer result: {:?}", reply.result);
 
-        // match self.election_state.leader_state_mut() {
-        //     None => { /* Not leader anymore */ },
-        //     Some(leader_state) => {
-        //         reply.peer_id
-        //     },
-        // }
-        // TODO:1 track replication
-        // let appended_index = Index::new(1);
-        // self.commit_log.ratchet_fwd_commit_index(appended_index);
-        // self.commit_log.apply_all_committed_entries();
+        if self.local_state.current_term() != reply.descriptor.term {
+            slog::info!(logger, "Received AE reply for outdated term {:?}, but we're on term {:?}", reply.descriptor.term, self.local_state.current_term());
+            return;
+        }
+
+        match self.election_state.leader_state_mut() {
+            None => slog::info!(logger, "No longer leader"),
+            Some(leader_state) => {
+                // 1. Check for stale term rejection
+                let peer_log_update = match reply.result {
+                    Err(AppendEntriesReplyFromPeerError::StaleTerm { new_term }) => {
+                        slog::warn!(logger, "Rejected by peer because my term is stale.");
+                        let increased = self.local_state.store_term_if_increased(new_term);
+                        if increased {
+                            self.election_state.transition_to_follower(None);
+                            slog::info!(logger, "Transitioned to follower.");
+                            return;
+                        } else {
+                            slog::warn!(logger, "This should not happen (unless peer has bug). Treating non-incrementing StaleTerm err as generic failure.");
+                            PeerStateUpdate::OtherError
+                        }
+                    }
+                    Err(AppendEntriesReplyFromPeerError::PeerMissingPreviousLogEntry) => {
+                        slog::info!(logger, "Peer is missing previous log entry");
+                        PeerStateUpdate::PeerLogBehind
+                    }
+                    Err(AppendEntriesReplyFromPeerError::RetryableFailure(err_msg)) => {
+                        slog::error!(logger, "AE failure: {:?}", err_msg);
+                        // Consider adding exponential backoff w jitter here.
+                        PeerStateUpdate::OtherError
+                    }
+                    Ok(_) => {
+                        slog::info!(logger, "Successful AE reply");
+                        PeerStateUpdate::Success {
+                            previous_log_entry: reply.descriptor.previous_log_entry_index,
+                            num_entries_replicated: reply.descriptor.num_log_entries,
+                        }
+                    }
+                };
+
+                // 2. Update peer log tracker
+                let peer_state = match leader_state.peer_state_mut(&reply.descriptor.peer_id) {
+                    None => {
+                        slog::warn!(logger, "Peer {:?} not found while handling AE reply", reply.descriptor.peer_id);
+                        return;
+                    },
+                    Some(peer_state) => peer_state,
+                };
+                peer_state.handle_append_entries_result(&logger, reply.descriptor.seq_no, peer_log_update);
+                let (next_index, _) = peer_state.next_and_previous_log_index();
+
+                // 3. Check for majority replication and apply new commits.
+                // > If there exists an N such that N > commitIndex, a majority
+                // > of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+                // > set commitIndex = N (§5.3, §5.4).
+                // See also:
+                // > Figure 8: A time sequence showing why a leader cannot determine
+                // > commitment using log entries from older terms.
+                let peers_matched_index: Vec<_> = leader_state
+                    .peers_iter()
+                    .map(|peer_state| peer_state.matched())
+                    .collect();
+                if let Some(tentative_new_commit_index) = Self::get_cluster_commit_index(peers_matched_index) {
+                    match self.commit_log.ratchet_fwd_commit_index_if_valid(tentative_new_commit_index, self.local_state.current_term()) {
+                        Ok(_) => self.commit_log.apply_all_committed_entries(),
+                        Err(ioe) => slog::warn!(logger, "IO failure while confirming new commit index {:?}: {:?}", tentative_new_commit_index, ioe),
+                    }
+                }
+
+                // 4. Enqueue next peer timer event.
+                // > If last log index ≥ nextIndex for a follower: send
+                // > AppendEntries RPC with log entries starting at nextIndex
+                let mut do_immediate_call = false;
+                if let Some(last_log_index) = self.commit_log.latest_entry().map(|(_, v)| v) {
+                    if last_log_index >= next_index {
+                        do_immediate_call = true;
+                    }
+                }
+
+                if do_immediate_call {
+                    // TODO:1 impl this shit
+                } else {
+                    // TODO:1 impl this shit
+                }
+            },
+        }
+    }
+
+    fn get_cluster_commit_index(mut peers_matched_indexes: Vec<Option<Index>>) -> Option<Index> {
+        peers_matched_indexes.sort_by_key(|matched| match matched {
+            None => 0u64,
+            Some(m) => m.as_u64(),
+        });
+
+        // Overview of why algo is correct:
+        // We are always at the tail of the array, because our log is same/longest.
+        // 1. add "me"
+        //let cluster_size = peers_matched_indexes.len() + 1;
+        // 2. calculate majority
+        //let majority = (cluster_size / 2) + 1;
+        // 3. subtract "me"
+        //let num_peers_to_achieve_majority = majority - 1;
+        // 4. take `i`th index from the right
+        //let quorum_idx = peers_matched_indexes.len() - num_peers_to_achieve_majority;
+
+        // Or just use this simplified equation which is harder to understand at a glance why it
+        // works. When in doubt, just read the unit tests.
+        let quorum_idx = peers_matched_indexes.len() / 2;
+
+        peers_matched_indexes.remove(quorum_idx)
     }
 
     pub fn handle_leader_timer(&mut self) {
@@ -751,5 +852,76 @@ mod leader_timer_handler {
             previous_log_entry_index: previous_log_entry_index_u64,
             new_entries,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::replica::{Replica, VolatileLocalState, RaftCommitLogEntry};
+    use crate::commitlog::{Index, InMemoryLog};
+
+    type Repl = Replica<InMemoryLog<RaftCommitLogEntry>, VolatileLocalState>;
+
+    fn opt_index(v: u64) -> Option<Index> {
+        if v == 0 {
+            None
+        } else {
+            Some(Index::new(v))
+        }
+    }
+
+    #[test]
+    fn test_commit_checker_logic() {
+        fn run(expected: u64, matches: Vec<u64>) {
+            let matches = matches
+                .into_iter()
+                .map(|m| opt_index(m))
+                .collect();
+
+            let expected = opt_index(expected);
+
+            assert_eq!(expected, Repl::get_cluster_commit_index(matches));
+        }
+
+        // 3-cluster
+        run(0, vec![0, 0]);
+        run(9, vec![0, 9]);
+        run(9, vec![8, 9]);
+
+        // 4-cluster
+        run(0, vec![0, 0, 0]);
+        run(0, vec![0, 0, 9]);
+        run(8, vec![0, 8, 9]);
+        run(8, vec![7, 8, 9]);
+
+        // 5-cluster
+        run(0, vec![0, 0, 0, 0]);
+        run(0, vec![0, 0, 0, 9]);
+        run(8, vec![0, 0, 8, 9]);
+        run(8, vec![0, 7, 8, 9]);
+        run(8, vec![6, 7, 8, 9]);
+
+        // 6-cluster
+        run(0, vec![0, 0, 0, 0, 0]);
+        run(0, vec![0, 0, 0, 0, 9]);
+        run(0, vec![0, 0, 0, 8, 9]);
+        run(7, vec![0, 0, 7, 8, 9]);
+        run(7, vec![0, 6, 7, 8, 9]);
+        run(7, vec![5, 6, 7, 8, 9]);
+
+        // 7-cluster
+        run(0, vec![0, 0, 0, 0, 0, 0]);
+        run(0, vec![0, 0, 0, 0, 0, 9]);
+        run(0, vec![0, 0, 0, 0, 8, 9]);
+        run(7, vec![0, 0, 0, 7, 8, 9]);
+        run(7, vec![0, 0, 6, 7, 8, 9]);
+        run(7, vec![0, 5, 6, 7, 8, 9]);
+        run(7, vec![4, 5, 6, 7, 8, 9]);
+
+        // Ordering doesn't matter
+        run(9, vec![9, 8]);
+        run(8, vec![7, 9, 8]);
+        run(8, vec![6, 0, 8, 9]);
+        run(7, vec![9, 8, 0, 0, 7]);
     }
 }

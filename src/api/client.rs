@@ -82,6 +82,7 @@ pub enum StartReplicationError {
     LeaderRedirect {
         leader_id: String,
         leader_ip: Ipv4Addr,
+        // TODO:1.5 Bug: this is currently the same IP/port as the raft RPC server, but it shouldn't be!
         leader_port: u16,
     },
 

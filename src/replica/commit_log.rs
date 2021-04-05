@@ -68,6 +68,14 @@ where
         self.log.read(index)
     }
 
+    fn read_required(&self, index: Index) -> Result<RaftCommitLogEntry, io::Error> {
+        match self.read(index) {
+            Ok(Some(entry)) => Ok(entry),
+            Ok(None) => panic!("read_required() found no log entry for index {:?}", index),
+            Err(ioe) => Err(ioe),
+        }
+    }
+
     /// Remove anything starting at `index` and later.
     pub fn truncate(&mut self, index: Index) -> Result<(), io::Error> {
         let new_latest_entry_index = index.minus(1); // TODO:1.5 panic risk, fix it
@@ -95,6 +103,28 @@ where
 
     pub fn commit_index(&self) -> Option<Index> {
         self.commit_index
+    }
+
+    pub fn ratchet_fwd_commit_index_if_valid(&mut self, tentative_new_commit_index: Index, current_term: Term) -> Result<(), io::Error> {
+        // Gracefully handle only the case where commit index is unchanged. Panic (later) if index
+        // is decreasing.
+        if let Some(current_commit_index) = self.commit_index {
+            if tentative_new_commit_index == current_commit_index {
+                return Ok(());
+            }
+        }
+
+        // > If there exists an N such that N > commitIndex, a majority
+        // > of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+        // > set commitIndex = N (§5.3, §5.4).
+        let entry = self.read_required(tentative_new_commit_index)?;
+        if entry.term != current_term {
+            return Ok(())
+        }
+
+        self.ratchet_fwd_commit_index(tentative_new_commit_index);
+
+        Ok(())
     }
 
     pub fn ratchet_fwd_commit_index(&mut self, new_commit_index: Index) {
@@ -163,12 +193,8 @@ where
     fn apply_single_entry(&mut self, index_to_apply: Index) -> Result<(), io::Error> {
         // TODO:2 implement batch/streamed read.
         // TODO:3 Make failure less likely by buffering in memory limited number of recent uncommited entries.
-        let entry = match self.read(index_to_apply) {
-            Ok(Some(entry)) => entry,
-            // TODO:2 validate and/or gracefully handle.
-            Ok(None) => panic!("This should never happen #5230185123"),
-            Err(e) => return Err(e),
-        };
+        // TODO:2 validate and/or gracefully handle.
+        let entry = self.read_required(index_to_apply)?;
 
         self.commit_stream.notify_commit(
             &self.logger,
