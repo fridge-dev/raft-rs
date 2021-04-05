@@ -37,7 +37,7 @@ async fn leader_election() -> Result<(), Box<dyn Error>> {
         }
         Err(raft::StartReplicationError::LeaderRedirect { leader_id, .. }) => {
             println!("Redirected to {:?}", leader_id);
-            clients.get(&leader_id).unwrap().clone()
+            clients.get(&leader_id).unwrap()
         }
         Err(e) => {
             panic!("Failed to find leader: {:?}", e);
@@ -54,6 +54,56 @@ async fn leader_election() -> Result<(), Box<dyn Error>> {
     }
 
     sleep_sec(20).await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn simple_commit() -> Result<(), Box<dyn Error>> {
+    let num_members = 5;
+    let mut clients = HashMap::with_capacity(num_members);
+    for i in 0..num_members {
+        let client_config = config(i, 5);
+        let client_id = client_config.cluster_info.my_replica_id.clone();
+        let client = raft::create_raft_client(client_config).await?;
+        clients.insert(client_id, client);
+    }
+
+    // Wait for leader election
+    sleep_sec(10).await;
+
+    // Start repl of an entry
+    let data_to_replicate = Bytes::from(String::from("Hello world"));
+    let (_, any_client) = clients.iter_mut().next().unwrap();
+    let result = any_client
+        .replication_log
+        .start_replication(raft::StartReplicationInput { data: data_to_replicate.clone() })
+        .await;
+
+    let (_leader_client, output) = match result {
+        Ok(ok) => (any_client, ok),
+        Err(raft::StartReplicationError::LeaderRedirect { leader_id, .. }) => {
+            println!("Redirected to {:?}", leader_id);
+            let leader = clients
+                .get_mut(&leader_id)
+                .unwrap();
+            let output = leader
+                .replication_log
+                .start_replication(raft::StartReplicationInput { data: data_to_replicate.clone(), })
+                .await
+                .unwrap();
+            (leader, output)
+
+        }
+        Err(e) => panic!("Failed to find leader: {:?}", e),
+    };
+
+    // Assert that all clients observe that the entry becomes committed.
+    for (_, c) in clients.iter_mut() {
+        let committed = c.commit_stream.next().await;
+        assert_eq!(committed.key, output.key);
+        assert_eq!(committed.data, data_to_replicate);
+    }
 
     Ok(())
 }

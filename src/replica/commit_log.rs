@@ -246,7 +246,7 @@ impl From<Vec<u8>> for RaftCommitLogEntry {
     fn from(bytes: Vec<u8>) -> Self {
         // TODO:1 research how to do this correctly, safely, and efficiently.
         // TODO:2 use TryFrom so we can return error
-        assert!(bytes.len() >= 8);
+        assert!(bytes.len() >= 9);
         assert_eq!(bytes[0], RAFT_LOG_ENTRY_FORMAT_VERSION);
 
         let term: u64 = bytes[1] as u64
@@ -257,11 +257,9 @@ impl From<Vec<u8>> for RaftCommitLogEntry {
             | (bytes[6] as u64) << 5 * 8
             | (bytes[7] as u64) << 6 * 8
             | (bytes[8] as u64) << 7 * 8;
-        let mut data: Vec<u8> = Vec::with_capacity(bytes.len() - 8);
-        data.clone_from_slice(&bytes[8..]);
         RaftCommitLogEntry {
             term: Term::new(term),
-            data,
+            data: bytes[9..].to_vec(),
         }
     }
 }
