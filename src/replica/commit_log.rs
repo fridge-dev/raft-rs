@@ -105,7 +105,11 @@ where
         self.commit_index
     }
 
-    pub fn ratchet_fwd_commit_index_if_valid(&mut self, tentative_new_commit_index: Index, current_term: Term) -> Result<(), io::Error> {
+    pub fn ratchet_fwd_commit_index_if_valid(
+        &mut self,
+        tentative_new_commit_index: Index,
+        current_term: Term,
+    ) -> Result<(), io::Error> {
         // Gracefully handle only the case where commit index is unchanged. Panic (later) if index
         // is decreasing.
         if let Some(current_commit_index) = self.commit_index {
@@ -119,7 +123,7 @@ where
         // > set commitIndex = N (§5.3, §5.4).
         let entry = self.read_required(tentative_new_commit_index)?;
         if entry.term != current_term {
-            return Ok(())
+            return Ok(());
         }
 
         self.ratchet_fwd_commit_index(tentative_new_commit_index);

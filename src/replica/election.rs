@@ -3,10 +3,10 @@ use crate::commitlog::Index;
 use crate::replica::peers::ReplicaId;
 use crate::replica::timers::{FollowerTimerHandle, LeaderTimerHandle};
 use crate::replica::Term;
+use std::collections::hash_map::Values;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use tokio::time::Duration;
-use std::collections::hash_map::Values;
 
 #[derive(Clone)]
 pub struct ElectionConfig {
@@ -335,7 +335,12 @@ impl PeerState {
         self.matched
     }
 
-    pub fn handle_append_entries_result(&mut self, logger: &slog::Logger, received_seq_no: u64, update: PeerStateUpdate) {
+    pub fn handle_append_entries_result(
+        &mut self,
+        logger: &slog::Logger,
+        received_seq_no: u64,
+        update: PeerStateUpdate,
+    ) {
         if !self.ratchet_fwd_received_seq_no(received_seq_no) {
             slog::warn!(logger, "Dropping out of date seq-no({:?}): {:?}", received_seq_no, update);
             return;

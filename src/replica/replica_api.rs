@@ -164,3 +164,10 @@ pub enum AppendEntriesReplyFromPeerError {
     RetryableFailure(String),
     StaleTerm { new_term: Term },
 }
+
+/// LeaderTimerTick contains info for a single tick of a leader's per-peer timer.
+#[derive(Debug)]
+pub struct LeaderTimerTick {
+    pub peer_id: ReplicaId,
+    pub term: Term,
+}

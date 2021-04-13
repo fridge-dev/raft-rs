@@ -77,23 +77,24 @@ async fn simple_commit() -> Result<(), Box<dyn Error>> {
     let (_, any_client) = clients.iter_mut().next().unwrap();
     let result = any_client
         .replication_log
-        .start_replication(raft::StartReplicationInput { data: data_to_replicate.clone() })
+        .start_replication(raft::StartReplicationInput {
+            data: data_to_replicate.clone(),
+        })
         .await;
 
     let (_leader_client, output) = match result {
         Ok(ok) => (any_client, ok),
         Err(raft::StartReplicationError::LeaderRedirect { leader_id, .. }) => {
             println!("Redirected to {:?}", leader_id);
-            let leader = clients
-                .get_mut(&leader_id)
-                .unwrap();
+            let leader = clients.get_mut(&leader_id).unwrap();
             let output = leader
                 .replication_log
-                .start_replication(raft::StartReplicationInput { data: data_to_replicate.clone(), })
+                .start_replication(raft::StartReplicationInput {
+                    data: data_to_replicate.clone(),
+                })
                 .await
                 .unwrap();
             (leader, output)
-
         }
         Err(e) => panic!("Failed to find leader: {:?}", e),
     };

@@ -16,7 +16,8 @@ use crate::replica::replica_api::{
     RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
 };
 use crate::replica::{
-    AppendEntriesReplyFromPeerDescriptor, AppendEntriesReplyFromPeerError, LeaderLogState, RequestVoteResult,
+    AppendEntriesReplyFromPeerDescriptor, AppendEntriesReplyFromPeerError, LeaderLogState, LeaderTimerTick,
+    RequestVoteResult,
 };
 use std::collections::HashSet;
 use std::{cmp, io};
@@ -449,7 +450,7 @@ where
                     None => {
                         slog::warn!(logger, "Peer {:?} not found while handling AE reply", reply.descriptor.peer_id);
                         return;
-                    },
+                    }
                     Some(peer_state) => peer_state,
                 };
                 peer_state.handle_append_entries_result(&logger, reply.descriptor.seq_no, peer_log_update);
@@ -467,9 +468,17 @@ where
                     .map(|peer_state| peer_state.matched())
                     .collect();
                 if let Some(tentative_new_commit_index) = Self::get_cluster_commit_index(peers_matched_index) {
-                    match self.commit_log.ratchet_fwd_commit_index_if_valid(tentative_new_commit_index, self.local_state.current_term()) {
+                    match self
+                        .commit_log
+                        .ratchet_fwd_commit_index_if_valid(tentative_new_commit_index, self.local_state.current_term())
+                    {
                         Ok(_) => self.commit_log.apply_all_committed_entries(),
-                        Err(ioe) => slog::warn!(logger, "IO failure while confirming new commit index {:?}: {:?}", tentative_new_commit_index, ioe),
+                        Err(ioe) => slog::warn!(
+                            logger,
+                            "IO failure while confirming new commit index {:?}: {:?}",
+                            tentative_new_commit_index,
+                            ioe
+                        ),
                     }
                 }
 
@@ -488,7 +497,7 @@ where
                 } else {
                     // TODO:1 impl this shit
                 }
-            },
+            }
         }
     }
 
@@ -516,33 +525,37 @@ where
         peers_matched_indexes.remove(quorum_idx)
     }
 
-    pub fn handle_leader_timer(&mut self) {
-        // We don't terminate iteration of peers early to ensure we retain leadership
-        // in case a leader gets corrupted state related to a single peer.
-        //
-        // TODO:1 change leader timer to be per-peer, not global broadcast.
-        let peers_iter = self.cluster_tracker.cloned_peers();
-        for peer in peers_iter {
-            self.handle_leader_timer_for_peer(&peer)
+    pub fn handler_leader_timer(&mut self, input: LeaderTimerTick) {
+        let current_term = self.local_state.current_term();
+        if current_term != input.term {
+            slog::warn!(self.logger, "Received leader heartbeat for outdated term {:?}, current term: {:?}", input.term, current_term);
+            return;
         }
-    }
 
-    fn handle_leader_timer_for_peer(&mut self, peer: &Peer) {
-        match self.try_handle_leader_timer_for_peer(peer) {
+        let peer = match self.cluster_tracker.peer(&input.peer_id) {
+            Some(peer) => peer.clone(),
+            // TODO:1 should this be INFO? Check after we figure out how to manage lifecycle of heartbeat timer.
+            None => {
+                slog::warn!(self.logger, "Missing Peer {:?} in ClusterTracker", input.peer_id);
+                return;
+            }
+        };
+
+        match self.try_handle_leader_timer_for_peer(peer, current_term) {
             Ok(_) => {}
             Err(HandleLeaderTimerError::NoLongerLeader) => {
                 slog::info!(self.logger, "Received leader timer event but no longer leader.")
             }
             Err(HandleLeaderTimerError::PeerConcurrencyThrottle) => {
-                slog::warn!(self.logger, "Too many outstanding requests to peer {:?}", peer.metadata.replica_id())
+                slog::warn!(self.logger, "Too many outstanding requests to peer {:?}", input.peer_id)
             }
             Err(HandleLeaderTimerError::DiskRead(index, ioe)) => {
-                slog::error!(self.logger, "Failed to read entry at index {:?}: {:?}", index, ioe);
+                slog::error!(self.logger, "Failed to read log entry at index {:?}: {:?}", index, ioe);
             }
             Err(HandleLeaderTimerError::UnexpectedMissingLogEntry(index)) => {
                 slog::error!(
                     self.logger,
-                    "Wtf! LeaderStateTracker is tracking index {:?}, but entry is missing from disk.",
+                    "Wtf! LeaderStateTracker is tracking index {:?}, but entry is missing from log.",
                     index
                 );
             }
@@ -551,20 +564,24 @@ where
             }) => {
                 slog::error!(
                     self.logger,
-                    "Wtf. Replica '{:?}' is present in ClusterTracker but missing in LeaderStateTracker. LeaderStateTracker peers: [{:?}]",
-                    peer.metadata.replica_id(),
+                    "Wtf. Peer {:?} is present in ClusterTracker but missing in LeaderStateTracker. LeaderStateTracker peers: [{:?}]",
+                    input.peer_id,
                     leader_state_tracker_peers,
                 )
             }
         }
     }
 
-    fn try_handle_leader_timer_for_peer(&mut self, peer: &Peer) -> Result<(), HandleLeaderTimerError> {
+    fn try_handle_leader_timer_for_peer(
+        &mut self,
+        peer: Peer,
+        current_term: Term,
+    ) -> Result<(), HandleLeaderTimerError> {
         match self.election_state.leader_state_mut() {
             None => Err(HandleLeaderTimerError::NoLongerLeader),
             Some(leader_state) => {
                 let (proto_request, descriptor) = leader_timer_handler::new_append_entries_request(
-                    self.local_state.current_term(),
+                    current_term,
                     self.my_replica_id.clone(),
                     peer.metadata.replica_id().clone(),
                     leader_state,
@@ -574,7 +591,7 @@ where
                 // TODO:1.5 add RequestId to remote call
                 tokio::task::spawn(Self::call_peer_append_entries(
                     self.logger.clone(),
-                    peer.client.clone(),
+                    peer.client,
                     proto_request,
                     self.append_entries_timeout,
                     self.actor_client.clone(),
@@ -857,8 +874,8 @@ mod leader_timer_handler {
 
 #[cfg(test)]
 mod tests {
-    use crate::replica::{Replica, VolatileLocalState, RaftCommitLogEntry};
-    use crate::commitlog::{Index, InMemoryLog};
+    use crate::commitlog::{InMemoryLog, Index};
+    use crate::replica::{RaftCommitLogEntry, Replica, VolatileLocalState};
 
     type Repl = Replica<InMemoryLog<RaftCommitLogEntry>, VolatileLocalState>;
 
@@ -873,10 +890,7 @@ mod tests {
     #[test]
     fn test_commit_checker_logic() {
         fn run(expected: u64, matches: Vec<u64>) {
-            let matches = matches
-                .into_iter()
-                .map(|m| opt_index(m))
-                .collect();
+            let matches = matches.into_iter().map(|m| opt_index(m)).collect();
 
             let expected = opt_index(expected);
 

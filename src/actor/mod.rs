@@ -1,9 +1,8 @@
 use crate::commitlog;
 use crate::replica;
-use prost::alloc::fmt::Formatter;
 use std::error::Error;
 use std::fmt;
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use tokio::sync::{mpsc, oneshot};
 
 // v1 Design choice: Disk interaction will be synchronous. Future improvement: There should be a
@@ -47,10 +46,10 @@ pub enum Event {
     // Thought: Separate channel for timer/heartbeat events?
     // Thought: Combine heartbeat timer into single timer? Take different action based on state?
 
-    // Leader: Call AppendEntries on all peers with all local un-replicated entries. Initialize local state tracking each entry's replication progress.
+    // Leader: Call AppendEntries for peer with all local un-replicated entries, or send empty heartbeat.
     // Candidate: NOT POSSIBLE - discard
     // Follower: NOT POSSIBLE - discard
-    LeaderTimer, /* Payload? */
+    LeaderTimer(replica::LeaderTimerTick),
 
     // Leader: NOT POSSIBLE - discard
     // Candidate: Transition to candidate. Trigger new election.
@@ -125,8 +124,17 @@ impl ActorClient {
         self.send_to_actor(Event::AppendEntriesReplyFromPeer(reply)).await;
     }
 
-    pub async fn leader_timer(&self) {
-        self.send_to_actor(Event::LeaderTimer).await;
+    // TODO:1 remove and make timers per-peer
+    pub async fn leader_timer_old(&self) {
+        self.leader_timer(replica::LeaderTimerTick {
+            peer_id: replica::ReplicaId::new("fake".into()),
+            term: replica::Term::new(1),
+        })
+        .await;
+    }
+
+    pub async fn leader_timer(&self, input: replica::LeaderTimerTick) {
+        self.send_to_actor(Event::LeaderTimer(input)).await;
     }
 
     pub async fn follower_timeout(&self) {
@@ -195,8 +203,8 @@ where
             Event::AppendEntriesReplyFromPeer(reply) => {
                 self.replica.handle_append_entries_reply_from_peer(reply);
             }
-            Event::LeaderTimer => {
-                self.replica.handle_leader_timer();
+            Event::LeaderTimer(input) => {
+                self.replica.handler_leader_timer(input);
             }
             Event::FollowerTimeout => {
                 self.replica.handle_follower_timeout();

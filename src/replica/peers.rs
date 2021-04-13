@@ -58,7 +58,7 @@ impl ReplicaMetadata {
 }
 
 /// Peer is a replica that is not me.
-#[derive(Clone)] // TODO:1 can remove after leader timer is per-peer
+#[derive(Clone)]
 pub struct Peer {
     pub metadata: ReplicaMetadata,
     pub client: RaftClient,
@@ -70,6 +70,7 @@ pub struct ClusterTracker {
     peers: HashMap<ReplicaId, Peer>,
 }
 
+// Associated factory functions
 impl ClusterTracker {
     pub async fn create_valid_cluster(
         logger: slog::Logger,
@@ -124,7 +125,10 @@ impl ClusterTracker {
         );
         uri::Uri::from_maybe_shared(url)
     }
+}
 
+// Methods
+impl ClusterTracker {
     pub fn my_replica_id(&self) -> &ReplicaId {
         &self.my_replica_metadata.id
     }
@@ -136,11 +140,6 @@ impl ClusterTracker {
     // Exposing HashMap type, but experimenting with this style.
     pub fn iter_peers(&self) -> Values<'_, ReplicaId, Peer> {
         self.peers.values()
-    }
-
-    // TODO:1 must remove after leader timer is per-peer
-    pub fn cloned_peers(&self) -> Vec<Peer> {
-        self.peers.values().cloned().collect()
     }
 
     pub fn peer_ids(&self) -> HashSet<ReplicaId> {

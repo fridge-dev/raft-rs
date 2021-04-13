@@ -26,7 +26,7 @@ impl LeaderTimerHandle {
     ) {
         // Eagerly publish timer event before entering first tick loop. This will trigger newly
         // elected leader to broadcast its heartbeat sooner than the heartbeat duration.
-        actor_client.leader_timer().await;
+        actor_client.leader_timer_old().await;
 
         let mut interval = time::interval(heartbeat_duration);
         loop {
@@ -35,7 +35,7 @@ impl LeaderTimerHandle {
                 break;
             }
             // TODO:1.5 do we need term in leader timer event payload? Prevent against outdated heartbeat.
-            actor_client.leader_timer().await;
+            actor_client.leader_timer_old().await;
         }
     }
 }
