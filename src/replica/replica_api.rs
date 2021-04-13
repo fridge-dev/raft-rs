@@ -166,7 +166,7 @@ pub enum AppendEntriesReplyFromPeerError {
 }
 
 /// LeaderTimerTick contains info for a single tick of a leader's per-peer timer.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LeaderTimerTick {
     pub peer_id: ReplicaId,
     pub term: Term,

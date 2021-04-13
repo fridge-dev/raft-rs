@@ -1,20 +1,31 @@
 use crate::actor;
+use crate::replica;
 use rand::Rng;
 use std::ops::RangeInclusive;
 use tokio::time;
 use tokio::time::{Duration, Instant};
 
-// TODO:1 do we need per-peer timer?
 pub struct LeaderTimerHandle {
     // will be dropped
     _stopper: stop_signal::Stopper,
 }
 
 impl LeaderTimerHandle {
-    pub fn spawn_background_task(heartbeat_duration: Duration, actor_client: actor::ActorClient) -> Self {
+    pub fn spawn_background_task(
+        heartbeat_duration: Duration,
+        actor_client: actor::ActorClient,
+        peer_id: replica::ReplicaId,
+        term: replica::Term,
+    ) -> Self {
         let (stopper, stop_check) = stop_signal::new();
 
-        tokio::task::spawn(Self::leader_timer_task(stop_check, heartbeat_duration, actor_client));
+        tokio::task::spawn(Self::leader_timer_task(
+            stop_check,
+            heartbeat_duration,
+            actor_client,
+            peer_id,
+            term,
+        ));
 
         LeaderTimerHandle { _stopper: stopper }
     }
@@ -23,10 +34,17 @@ impl LeaderTimerHandle {
         stop_check: stop_signal::StopCheck,
         heartbeat_duration: Duration,
         actor_client: actor::ActorClient,
+        peer_id: replica::ReplicaId,
+        term: replica::Term,
     ) {
+        let event = replica::LeaderTimerTick {
+            peer_id: peer_id.clone(),
+            term
+        };
+
         // Eagerly publish timer event before entering first tick loop. This will trigger newly
         // elected leader to broadcast its heartbeat sooner than the heartbeat duration.
-        actor_client.leader_timer_old().await;
+        actor_client.leader_timer(event.clone()).await;
 
         let mut interval = time::interval(heartbeat_duration);
         loop {
@@ -34,8 +52,7 @@ impl LeaderTimerHandle {
             if stop_check.should_stop() {
                 break;
             }
-            // TODO:1.5 do we need term in leader timer event payload? Prevent against outdated heartbeat.
-            actor_client.leader_timer_old().await;
+            actor_client.leader_timer(event.clone()).await;
         }
     }
 }

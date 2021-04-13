@@ -246,11 +246,14 @@ where
     pub fn handle_request_vote_reply_from_peer(&mut self, reply: RequestVoteReplyFromPeer) {
         match reply.result {
             RequestVoteResult::VoteGranted => {
-                let received_majority_vote =
-                    self.election_state
-                        .add_vote_if_candidate(&self.logger, reply.term, reply.peer_id);
+                let received_majority_vote = self.election_state.add_vote_if_candidate(
+                    &self.logger,
+                    reply.term,
+                    reply.peer_id,
+                );
                 if received_majority_vote {
                     self.election_state.transition_to_leader(
+                        reply.term,
                         self.cluster_tracker.peer_ids(),
                         self.commit_log.latest_entry().map(|(_, index)| index),
                     );

@@ -124,15 +124,6 @@ impl ActorClient {
         self.send_to_actor(Event::AppendEntriesReplyFromPeer(reply)).await;
     }
 
-    // TODO:1 remove and make timers per-peer
-    pub async fn leader_timer_old(&self) {
-        self.leader_timer(replica::LeaderTimerTick {
-            peer_id: replica::ReplicaId::new("fake".into()),
-            term: replica::Term::new(1),
-        })
-        .await;
-    }
-
     pub async fn leader_timer(&self, input: replica::LeaderTimerTick) {
         self.send_to_actor(Event::LeaderTimer(input)).await;
     }

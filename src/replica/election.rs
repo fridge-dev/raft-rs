@@ -16,6 +16,9 @@ pub struct ElectionConfig {
     pub follower_max_timeout: Duration,
 }
 
+/// ElectionState is responsible for holding state specific to the stage in an election. Its
+/// methods are responsible for "what" to do. It is NOT responsible for validating anything
+/// specific to logs, terms, peers, etc. or knowing "when" to do something.
 pub struct ElectionState {
     state: State,
     config: ElectionConfig,
@@ -60,12 +63,13 @@ impl ElectionState {
         self.state = State::Candidate(cs);
     }
 
-    pub fn transition_to_leader(&mut self, peer_ids: HashSet<ReplicaId>, previous_log_entry_index: Option<Index>) {
+    pub fn transition_to_leader(&mut self, term: Term, peer_ids: HashSet<ReplicaId>, previous_log_entry_index: Option<Index>) {
         self.state = State::Leader(LeaderState::new(
             peer_ids,
             previous_log_entry_index,
             self.config.leader_heartbeat_duration,
             self.actor_client.clone(),
+            term,
         ));
     }
 
@@ -96,6 +100,8 @@ impl ElectionState {
     }
 
     /// Return true if we've received a majority of votes.
+    /// TODO:1 refactor CS to not track term nor num_voting_replicas. This should be
+    /// pub fn add_vote_if_candidate(&mut self, vote_from: ReplicaId) -> usize
     pub fn add_vote_if_candidate(&mut self, logger: &slog::Logger, term: Term, vote_from: ReplicaId) -> bool {
         if let State::Candidate(cs) = &mut self.state {
             if cs.term != term {
@@ -177,7 +183,6 @@ enum State {
 
 struct LeaderState {
     tracker: LeaderStateTracker,
-    _heartbeat_timer: LeaderTimerHandle,
 }
 
 struct CandidateState {
@@ -198,15 +203,21 @@ impl LeaderState {
         previous_log_entry_index: Option<Index>,
         heartbeat_duration: Duration,
         actor_client: actor::ActorClient,
+        term: Term,
     ) -> Self {
         let mut peer_state = HashMap::with_capacity(peer_ids.len());
         for peer_id in peer_ids {
-            peer_state.insert(peer_id, PeerState::new(previous_log_entry_index));
+            let leader_timer_handle = LeaderTimerHandle::spawn_background_task(
+                heartbeat_duration,
+                actor_client.clone(),
+                peer_id.clone(),
+                term,
+            );
+            peer_state.insert(peer_id, PeerState::new(leader_timer_handle, previous_log_entry_index));
         }
 
         LeaderState {
             tracker: LeaderStateTracker::new(peer_state),
-            _heartbeat_timer: LeaderTimerHandle::spawn_background_task(heartbeat_duration, actor_client),
         }
     }
 }
@@ -297,6 +308,9 @@ impl LeaderStateTracker {
 }
 
 pub struct PeerState {
+    // Held to send heartbeats for this peer
+    _leader_timer_handler: LeaderTimerHandle,
+
     // > index of the next log entry to send to that server
     // > (initialized to leader last log index + 1)
     next: Index,
@@ -316,8 +330,9 @@ pub struct PeerState {
 }
 
 impl PeerState {
-    fn new(previous_log_entry_index: Option<Index>) -> Self {
+    fn new(leader_timer_handler: LeaderTimerHandle, previous_log_entry_index: Option<Index>) -> Self {
         PeerState {
+            _leader_timer_handler: leader_timer_handler,
             next: previous_log_entry_index
                 .map(|i| i.plus(1))
                 .unwrap_or_else(|| Index::start_index()),
@@ -414,6 +429,8 @@ impl PeerState {
             false
         }
     }
+
+    // TODO:1 expose method for ticking/delaying heartbeat timer.
 }
 
 #[derive(Debug)]
