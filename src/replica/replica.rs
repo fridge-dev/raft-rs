@@ -268,7 +268,7 @@ where
                 }
 
                 if let Some(peer) = self.cluster_tracker.peer(&reply.peer_id) {
-                    // TODO:1.5 add RequestId to remote call
+                    // TODO:2 add RequestId to remote call
                     tokio::task::spawn(Self::call_peer_request_vote(
                         self.logger.clone(),
                         peer.client.clone(),
@@ -496,9 +496,14 @@ where
                 }
 
                 if do_immediate_call {
-                    // TODO:1 impl this shit
-                } else {
-                    // TODO:1 impl this shit
+                    let actor_client = self.actor_client.clone();
+                    let peer_heartbeat = LeaderTimerTick {
+                        peer_id: reply.descriptor.peer_id,
+                        term: reply.descriptor.term,
+                    };
+                    tokio::task::spawn(async move {
+                        actor_client.leader_timer(peer_heartbeat).await;
+                    });
                 }
             }
         }
@@ -537,9 +542,8 @@ where
 
         let peer = match self.cluster_tracker.peer(&input.peer_id) {
             Some(peer) => peer.clone(),
-            // TODO:1 should this be INFO? Check after we figure out how to manage lifecycle of heartbeat timer.
             None => {
-                slog::warn!(self.logger, "Missing Peer {:?} in ClusterTracker", input.peer_id);
+                slog::error!(self.logger, "Missing Peer {:?} in ClusterTracker", input.peer_id);
                 return;
             }
         };
@@ -583,15 +587,23 @@ where
         match self.election_state.leader_state_mut() {
             None => Err(HandleLeaderTimerError::NoLongerLeader),
             Some(leader_state) => {
+                let peer_state = match leader_state.peer_state_mut(peer.metadata.replica_id()) {
+                    Some(ps) => ps,
+                    None => return Err(HandleLeaderTimerError::LeaderStateMissingPeer {
+                        leader_state_tracker_peers: leader_state.peer_ids(),
+                    })
+                };
+
                 let (proto_request, descriptor) = leader_timer_handler::new_append_entries_request(
                     current_term,
                     self.my_replica_id.clone(),
                     peer.metadata.replica_id().clone(),
-                    leader_state,
+                    peer_state,
                     &self.commit_log,
                 )?;
 
-                // TODO:1.5 add RequestId to remote call
+                // TODO:2 add RequestId to remote call
+                // TODO:2 change to use `async move` and put methods on peer or peer.client
                 tokio::task::spawn(Self::call_peer_append_entries(
                     self.logger.clone(),
                     peer.client,
@@ -600,6 +612,8 @@ where
                     self.actor_client.clone(),
                     descriptor,
                 ));
+
+                peer_state.reset_heartbeat_timer();
 
                 Ok(())
             }
@@ -684,7 +698,7 @@ where
         );
 
         for peer in self.cluster_tracker.iter_peers() {
-            // TODO:1.5 add RequestId to remote call
+            // TODO:2 add RequestId to remote call
             tokio::task::spawn(Self::call_peer_request_vote(
                 self.logger.clone(),
                 peer.client.clone(),
@@ -770,29 +784,20 @@ mod leader_timer_handler {
     use crate::commitlog::{Index, Log};
     use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
     use crate::replica::commit_log::RaftLog;
-    use crate::replica::election::LeaderStateTracker;
+    use crate::replica::election::PeerState;
     use crate::replica::replica::HandleLeaderTimerError;
     use crate::replica::{AppendEntriesReplyFromPeerDescriptor, RaftCommitLogEntry, ReplicaId, Term};
 
-    pub(super) fn new_append_entries_request<'a, L>(
+    pub(super) fn new_append_entries_request<L>(
         current_term: Term,
         my_id: ReplicaId,
         peer_id: ReplicaId,
-        leader_state: &'a mut LeaderStateTracker,
-        commit_log: &'a RaftLog<L>,
+        peer_state: &mut PeerState,
+        commit_log: &RaftLog<L>,
     ) -> Result<(ProtoAppendEntriesReq, AppendEntriesReplyFromPeerDescriptor), HandleLeaderTimerError>
     where
         L: Log<RaftCommitLogEntry>,
     {
-        let peer_state = match leader_state.peer_state_mut(&peer_id) {
-            Some(ps) => ps,
-            None => {
-                return Err(HandleLeaderTimerError::LeaderStateMissingPeer {
-                    leader_state_tracker_peers: leader_state.peer_ids(),
-                });
-            }
-        };
-
         // Simplicity vs throughput tradeoff. We're just going to allow 1 outstanding request per
         // peer; no pipelining. This should not limit throughput too badly however, as we will still
         // batch log entries. This will support my target use case of a low-volume (~1k RPS) service.

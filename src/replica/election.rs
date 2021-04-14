@@ -207,6 +207,7 @@ impl LeaderState {
     ) -> Self {
         let mut peer_state = HashMap::with_capacity(peer_ids.len());
         for peer_id in peer_ids {
+            // TODO:3 eagerly broadcast AE from this task for the initial round.
             let leader_timer_handle = LeaderTimerHandle::spawn_background_task(
                 heartbeat_duration,
                 actor_client.clone(),
@@ -309,7 +310,7 @@ impl LeaderStateTracker {
 
 pub struct PeerState {
     // Held to send heartbeats for this peer
-    _leader_timer_handler: LeaderTimerHandle,
+    leader_timer_handler: LeaderTimerHandle,
 
     // > index of the next log entry to send to that server
     // > (initialized to leader last log index + 1)
@@ -332,7 +333,7 @@ pub struct PeerState {
 impl PeerState {
     fn new(leader_timer_handler: LeaderTimerHandle, previous_log_entry_index: Option<Index>) -> Self {
         PeerState {
-            _leader_timer_handler: leader_timer_handler,
+            leader_timer_handler,
             next: previous_log_entry_index
                 .map(|i| i.plus(1))
                 .unwrap_or_else(|| Index::start_index()),
@@ -430,7 +431,9 @@ impl PeerState {
         }
     }
 
-    // TODO:1 expose method for ticking/delaying heartbeat timer.
+    pub fn reset_heartbeat_timer(&self) {
+        self.leader_timer_handler.reset_heartbeat_timer();
+    }
 }
 
 #[derive(Debug)]
