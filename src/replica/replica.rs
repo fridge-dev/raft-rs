@@ -57,6 +57,7 @@ where
     append_entries_timeout: Duration,
 }
 
+// TODO:1.5 implement event bus so tests can track leadership changes.
 impl<L, S> Replica<L, S>
 where
     L: Log<RaftCommitLogEntry> + 'static,
@@ -244,14 +245,41 @@ where
     }
 
     pub fn handle_request_vote_reply_from_peer(&mut self, reply: RequestVoteReplyFromPeer) {
+        let current_term = self.local_state.current_term();
+        if current_term != reply.term {
+            slog::info!(
+                self.logger,
+                "Received vote for outdated term {:?}, current term: {:?}.",
+                reply.term,
+                current_term,
+            );
+            return;
+        }
+
         match reply.result {
             RequestVoteResult::VoteGranted => {
-                let received_majority_vote = self.election_state.add_vote_if_candidate(
-                    &self.logger,
+                let num_votes_received = match self.election_state.add_vote_if_candidate(reply.peer_id) {
+                    Some(v) => v,
+                    None => {
+                        slog::info!(
+                            self.logger,
+                            "Received vote for term {:?} after transitioning to a different election state",
+                            reply.term
+                        );
+                        return;
+                    }
+                };
+
+                let num_voting_replicas = self.cluster_tracker.num_voting_replicas();
+                slog::info!(
+                    self.logger,
+                    "Received {}/{} votes for term {:?}",
+                    num_votes_received,
+                    num_voting_replicas,
                     reply.term,
-                    reply.peer_id,
                 );
-                if received_majority_vote {
+
+                if num_votes_received >= Self::get_majority_vote_count(num_voting_replicas) {
                     self.election_state.transition_to_leader(
                         reply.term,
                         self.cluster_tracker.peer_ids(),
@@ -261,12 +289,14 @@ where
             }
             RequestVoteResult::VoteNotGranted => {
                 // No action
+                slog::info!(
+                    self.logger,
+                    "Vote not granted from {:?} for term {:?}",
+                    reply.peer_id,
+                    reply.term,
+                );
             }
             RequestVoteResult::RetryableFailure | RequestVoteResult::MalformedReply => {
-                if !self.election_state.is_currently_candidate_for_term(reply.term) {
-                    return;
-                }
-
                 if let Some(peer) = self.cluster_tracker.peer(&reply.peer_id) {
                     // TODO:2 add RequestId to remote call
                     tokio::task::spawn(Self::call_peer_request_vote(
@@ -278,7 +308,7 @@ where
                         reply.term,
                     ));
                 } else {
-                    slog::warn!(
+                    slog::error!(
                         self.logger,
                         "Peer {:?} not found while retrying RequestVote. Wtf!",
                         reply.peer_id
@@ -286,6 +316,10 @@ where
                 }
             }
         }
+    }
+
+    fn get_majority_vote_count(num_voting_replicas: usize) -> usize {
+        (num_voting_replicas / 2) + 1
     }
 
     pub fn server_handle_append_entries(
@@ -688,9 +722,9 @@ where
     }
 
     pub fn handle_follower_timeout(&mut self) {
+        // Write-ahead log style: Vote for self on local state before transitioning to candidate.
         let new_term = self.local_state.increment_term_and_vote_for_self();
-        self.election_state
-            .transition_to_candidate(new_term, self.cluster_tracker.num_voting_replicas());
+        self.election_state.transition_to_candidate_and_vote_for_self();
         slog::info!(
             self.logger,
             "Timed out as follower. Changed to candidate. Election state: {:?}",

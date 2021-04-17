@@ -48,10 +48,8 @@ impl ElectionState {
         ));
     }
 
-    pub fn transition_to_candidate(&mut self, term: Term, num_voting_replicas: usize) {
+    pub fn transition_to_candidate_and_vote_for_self(&mut self) {
         let mut cs = CandidateState::new(
-            term,
-            num_voting_replicas,
             self.config.follower_min_timeout,
             self.config.follower_max_timeout,
             self.actor_client.clone(),
@@ -99,49 +97,12 @@ impl ElectionState {
         }
     }
 
-    /// Return true if we've received a majority of votes.
-    /// TODO:1 refactor CS to not track term nor num_voting_replicas. This should be
-    /// pub fn add_vote_if_candidate(&mut self, vote_from: ReplicaId) -> usize
-    pub fn add_vote_if_candidate(&mut self, logger: &slog::Logger, term: Term, vote_from: ReplicaId) -> bool {
+    /// Return number of votes received if candidate, or None if no longer Candidate.
+    pub fn add_vote_if_candidate(&mut self, vote_from: ReplicaId) -> Option<usize> {
         if let State::Candidate(cs) = &mut self.state {
-            if cs.term != term {
-                slog::info!(
-                    logger,
-                    "Received vote for outdated term {:?}, current term: {:?}.",
-                    term,
-                    cs.term
-                );
-                return false;
-            }
-
-            let num_votes_received = cs.add_received_vote(vote_from);
-            slog::info!(
-                logger,
-                "Received {}/{} votes for term {:?}",
-                num_votes_received,
-                cs.num_voting_replicas,
-                term
-            );
-            return num_votes_received >= Self::get_majority_count(cs.num_voting_replicas);
+            Some(cs.add_received_vote(vote_from))
         } else {
-            slog::info!(
-                logger,
-                "Received vote for term {:?} after transitioning to a different election state.",
-                term
-            );
-            return false;
-        }
-    }
-
-    fn get_majority_count(num_voting_replicas: usize) -> usize {
-        (num_voting_replicas / 2) + 1
-    }
-
-    pub fn is_currently_candidate_for_term(&self, term: Term) -> bool {
-        if let State::Candidate(cs) = &self.state {
-            cs.term == term
-        } else {
-            false
+            None
         }
     }
 
@@ -158,7 +119,7 @@ impl fmt::Debug for ElectionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.state {
             State::Leader(_) => write!(f, "Leader"),
-            State::Candidate(cs) => write!(f, "Candidate(Term={:?})", cs.term),
+            State::Candidate(_) => write!(f, "Candidate"),
             State::Follower(FollowerState {
                 leader_id: Some(leader_id),
                 ..
@@ -186,8 +147,6 @@ struct LeaderState {
 }
 
 struct CandidateState {
-    term: Term,
-    num_voting_replicas: usize,
     received_votes_from: HashSet<ReplicaId>,
     _follower_timeout_tracker: FollowerTimerHandle,
 }
@@ -225,16 +184,12 @@ impl LeaderState {
 
 impl CandidateState {
     pub fn new(
-        term: Term,
-        num_voting_replicas: usize,
         min_timeout: Duration,
         max_timeout: Duration,
         actor_client: actor::ActorClient,
     ) -> Self {
         CandidateState {
-            term,
-            num_voting_replicas,
-            received_votes_from: HashSet::with_capacity(num_voting_replicas),
+            received_votes_from: HashSet::with_capacity(3),
             _follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
                 min_timeout,
                 max_timeout,

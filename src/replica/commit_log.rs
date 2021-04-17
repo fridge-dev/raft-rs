@@ -248,7 +248,7 @@ impl Entry for RaftCommitLogEntry {}
 
 impl From<Vec<u8>> for RaftCommitLogEntry {
     fn from(bytes: Vec<u8>) -> Self {
-        // TODO:1 research how to do this correctly, safely, and efficiently.
+        // TODO:2 research how to do this correctly, safely, and efficiently.
         // TODO:2 use TryFrom so we can return error
         assert!(bytes.len() >= 9);
         assert_eq!(bytes[0], RAFT_LOG_ENTRY_FORMAT_VERSION);
