@@ -143,7 +143,7 @@ impl ActorClient {
 /// ReplicaActor is replica logic in actor model.
 pub struct ReplicaActor<L, S>
 where
-    L: commitlog::Log<replica::RaftCommitLogEntry>,
+    L: commitlog::Log<replica::RaftLogEntry>,
     S: replica::PersistentLocalState,
 {
     logger: slog::Logger,
@@ -153,7 +153,7 @@ where
 
 impl<L, S> ReplicaActor<L, S>
 where
-    L: commitlog::Log<replica::RaftCommitLogEntry> + 'static,
+    L: commitlog::Log<replica::RaftLogEntry> + 'static,
     S: replica::PersistentLocalState + 'static,
 {
     pub fn new(logger: slog::Logger, receiver: mpsc::Receiver<Event>, replica: replica::Replica<L, S>) -> Self {

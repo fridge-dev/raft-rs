@@ -61,7 +61,12 @@ impl ElectionState {
         self.state = State::Candidate(cs);
     }
 
-    pub fn transition_to_leader(&mut self, term: Term, peer_ids: HashSet<ReplicaId>, previous_log_entry_index: Option<Index>) {
+    pub fn transition_to_leader(
+        &mut self,
+        term: Term,
+        peer_ids: HashSet<ReplicaId>,
+        previous_log_entry_index: Option<Index>,
+    ) {
         self.state = State::Leader(LeaderState::new(
             peer_ids,
             previous_log_entry_index,
@@ -183,11 +188,7 @@ impl LeaderState {
 }
 
 impl CandidateState {
-    pub fn new(
-        min_timeout: Duration,
-        max_timeout: Duration,
-        actor_client: actor::ActorClient,
-    ) -> Self {
+    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::ActorClient) -> Self {
         CandidateState {
             received_votes_from: HashSet::with_capacity(3),
             _follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
@@ -313,13 +314,21 @@ impl PeerState {
         update: PeerStateUpdate,
     ) {
         if !self.ratchet_fwd_received_seq_no(received_seq_no) {
-            slog::warn!(logger, "Dropping out of date seq-no({:?}): {:?}", received_seq_no, update);
+            slog::warn!(
+                logger,
+                "Dropping out of date seq-no({:?}): {:?}",
+                received_seq_no,
+                update
+            );
             return;
         }
 
         match update {
             PeerStateUpdate::OtherError => { /* No action */ }
-            PeerStateUpdate::Success { previous_log_entry, num_entries_replicated } => {
+            PeerStateUpdate::Success {
+                previous_log_entry,
+                num_entries_replicated,
+            } => {
                 self.update_log(previous_log_entry, num_entries_replicated);
             }
             PeerStateUpdate::PeerLogBehind => {
@@ -334,19 +343,25 @@ impl PeerState {
                 // We didn't append any new logs, it was just a heartbeat, so do nothing.
                 return;
             }
-            (None, n) => {
-                Index::new_usize(n)
-            }
-            (Some(prev), n) => {
-                prev.plus(n as u64)
-            }
+            (None, n) => Index::new_usize(n),
+            (Some(prev), n) => prev.plus(n as u64),
         };
         let new_next = new_matched.plus(1);
 
         // Panic here, because it means as leader, we either sent something wrong or are tracking state wrong.
-        assert!(new_next > self.next, "Next can only ratchet forward. CurrentNext={:?}, NewNext={:?}", self.next, new_next);
+        assert!(
+            new_next > self.next,
+            "Next can only ratchet forward. CurrentNext={:?}, NewNext={:?}",
+            self.next,
+            new_next
+        );
         if let Some(matched) = self.matched {
-            assert!(new_matched > matched, "Matched can only ratchet forward. CurrentMatched={:?}, NewMatched={:?}", matched, new_matched)
+            assert!(
+                new_matched > matched,
+                "Matched can only ratchet forward. CurrentMatched={:?}, NewMatched={:?}",
+                matched,
+                new_matched
+            )
         }
 
         self.next = new_next;
@@ -356,7 +371,10 @@ impl PeerState {
     fn rewind_log(&mut self, logger: &slog::Logger) {
         // Don't panic here, because peer could return garbage data.
         if self.matched.is_some() {
-            slog::warn!(logger, "Illegal state: Can't handle AppendEntries rewind error after any success. Not mutating state.");
+            slog::warn!(
+                logger,
+                "Illegal state: Can't handle AppendEntries rewind error after any success. Not mutating state."
+            );
             return;
         }
 

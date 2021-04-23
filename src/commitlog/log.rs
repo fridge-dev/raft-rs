@@ -75,4 +75,5 @@ pub trait Log<E: Entry> {
     fn next_index(&self) -> Index;
 }
 
+// Choice of Vec<u8> vs Bytes will depend on whats easier for disk to use.
 pub trait Entry: Clone + From<Vec<u8>> + Into<Vec<u8>> {}

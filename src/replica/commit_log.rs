@@ -3,7 +3,8 @@
 //! this abstraction will make more sense.
 
 use crate::api;
-use crate::commitlog::{Entry, Index, Log};
+use crate::commitlog;
+use crate::commitlog::Index;
 use crate::replica::local_state::Term;
 use bytes::Bytes;
 use std::io;
@@ -19,7 +20,7 @@ use std::io;
 /// state the log entry is in.
 pub struct RaftLog<L>
 where
-    L: Log<RaftCommitLogEntry>,
+    L: commitlog::Log<RaftLogEntry>,
 {
     // Application's info/debug log.
     logger: slog::Logger,
@@ -40,7 +41,7 @@ where
 
 impl<L> RaftLog<L>
 where
-    L: Log<RaftCommitLogEntry>,
+    L: commitlog::Log<RaftLogEntry>,
 {
     pub fn new(logger: slog::Logger, log: L, commit_stream: api::CommitStreamPublisher) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
@@ -64,11 +65,11 @@ where
         self.latest_entry_metadata
     }
 
-    pub fn read(&self, index: Index) -> Result<Option<RaftCommitLogEntry>, io::Error> {
+    pub fn read(&self, index: Index) -> Result<Option<RaftLogEntry>, io::Error> {
         self.log.read(index)
     }
 
-    fn read_required(&self, index: Index) -> Result<RaftCommitLogEntry, io::Error> {
+    fn read_required(&self, index: Index) -> Result<RaftLogEntry, io::Error> {
         match self.read(index) {
             Ok(Some(entry)) => Ok(entry),
             Ok(None) => panic!("read_required() found no log entry for index {:?}", index),
@@ -92,7 +93,7 @@ where
         Ok(())
     }
 
-    pub fn append(&mut self, entry: RaftCommitLogEntry) -> Result<Index, io::Error> {
+    pub fn append(&mut self, entry: RaftLogEntry) -> Result<Index, io::Error> {
         let appended_term = entry.term;
         let appended_index = self.log.append(entry)?;
         // Only update state after log action completes.
@@ -234,19 +235,17 @@ where
 /// * Checksum is not needed, it's guaranteed by underlying commitlog.
 /// * Size/length of `Data` is not needed; the underlying commitlog will give us the correctly
 ///   allocated array.
-///
-/// TODO:1.5 is this struct needed as `pub`? I think we can expose these params separately to caller.
 #[derive(Clone)]
-pub struct RaftCommitLogEntry {
+pub struct RaftLogEntry {
     pub term: Term,
     pub data: Vec<u8>,
 }
 
 const RAFT_LOG_ENTRY_FORMAT_VERSION: u8 = 1;
 
-impl Entry for RaftCommitLogEntry {}
+impl commitlog::Entry for RaftLogEntry {}
 
-impl From<Vec<u8>> for RaftCommitLogEntry {
+impl From<Vec<u8>> for RaftLogEntry {
     fn from(bytes: Vec<u8>) -> Self {
         // TODO:2 research how to do this correctly, safely, and efficiently.
         // TODO:2 use TryFrom so we can return error
@@ -261,14 +260,14 @@ impl From<Vec<u8>> for RaftCommitLogEntry {
             | (bytes[6] as u64) << 5 * 8
             | (bytes[7] as u64) << 6 * 8
             | (bytes[8] as u64) << 7 * 8;
-        RaftCommitLogEntry {
+        RaftLogEntry {
             term: Term::new(term),
             data: bytes[9..].to_vec(),
         }
     }
 }
 
-impl Into<Vec<u8>> for RaftCommitLogEntry {
+impl Into<Vec<u8>> for RaftLogEntry {
     fn into(self) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::with_capacity(1 + 8 + self.data.len());
 

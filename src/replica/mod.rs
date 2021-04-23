@@ -123,7 +123,7 @@ mod replica;
 mod replica_api;
 mod timers;
 
-pub use commit_log::RaftCommitLogEntry;
+pub use commit_log::RaftLogEntry;
 pub use local_state::PersistentLocalState;
 pub use local_state::VolatileLocalState;
 pub use peers::ClusterTracker;

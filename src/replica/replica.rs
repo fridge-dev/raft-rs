@@ -5,7 +5,7 @@ use crate::grpc::{
     proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
     ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq,
 };
-use crate::replica::commit_log::{RaftCommitLogEntry, RaftLog};
+use crate::replica::commit_log::{RaftLog, RaftLogEntry};
 use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState, PeerStateUpdate};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peer_client::RaftClient;
@@ -27,7 +27,7 @@ use tonic::Status;
 
 pub struct ReplicaConfig<L, S>
 where
-    L: Log<RaftCommitLogEntry>,
+    L: Log<RaftLogEntry>,
     S: PersistentLocalState,
 {
     pub logger: slog::Logger,
@@ -44,7 +44,7 @@ where
 
 pub struct Replica<L, S>
 where
-    L: Log<RaftCommitLogEntry>,
+    L: Log<RaftLogEntry>,
     S: PersistentLocalState,
 {
     logger: slog::Logger,
@@ -60,7 +60,7 @@ where
 // TODO:1.5 implement event bus so tests can track leadership changes.
 impl<L, S> Replica<L, S>
 where
-    L: Log<RaftCommitLogEntry> + 'static,
+    L: Log<RaftLogEntry> + 'static,
     S: PersistentLocalState + 'static,
 {
     pub fn new(config: ReplicaConfig<L, S>) -> Self {
@@ -119,7 +119,7 @@ where
         // > If command received from client: append entry to local log,
         // > respond after entry applied to state machine (§5.3)
         let term = self.local_state.current_term();
-        let new_entry = RaftCommitLogEntry {
+        let new_entry = RaftLogEntry {
             term,
             data: input.data.to_vec(),
         };
@@ -398,7 +398,7 @@ where
             // 4. (append)
             let appended_index = self
                 .commit_log
-                .append(RaftCommitLogEntry {
+                .append(RaftLogEntry {
                     term: new_entry.term,
                     data: new_entry.data.to_vec(),
                 })
@@ -439,11 +439,18 @@ where
     }
 
     pub fn handle_append_entries_reply_from_peer(&mut self, reply: AppendEntriesReplyFromPeer) {
-        let logger = self.logger.new(slog::o!("Peer" => format!("{:?}", reply.descriptor.peer_id), "SeqNo" => reply.descriptor.seq_no));
+        let logger = self
+            .logger
+            .new(slog::o!("Peer" => format!("{:?}", reply.descriptor.peer_id), "SeqNo" => reply.descriptor.seq_no));
         slog::debug!(logger, "AE reply from peer result: {:?}", reply.result);
 
         if self.local_state.current_term() != reply.descriptor.term {
-            slog::info!(logger, "Received AE reply for outdated term {:?}, but we're on term {:?}", reply.descriptor.term, self.local_state.current_term());
+            slog::info!(
+                logger,
+                "Received AE reply for outdated term {:?}, but we're on term {:?}",
+                reply.descriptor.term,
+                self.local_state.current_term()
+            );
             return;
         }
 
@@ -485,7 +492,11 @@ where
                 // 2. Update peer log tracker
                 let peer_state = match leader_state.peer_state_mut(&reply.descriptor.peer_id) {
                     None => {
-                        slog::warn!(logger, "Peer {:?} not found while handling AE reply", reply.descriptor.peer_id);
+                        slog::warn!(
+                            logger,
+                            "Peer {:?} not found while handling AE reply",
+                            reply.descriptor.peer_id
+                        );
                         return;
                     }
                     Some(peer_state) => peer_state,
@@ -570,7 +581,12 @@ where
     pub fn handler_leader_timer(&mut self, input: LeaderTimerTick) {
         let current_term = self.local_state.current_term();
         if current_term != input.term {
-            slog::warn!(self.logger, "Received leader heartbeat for outdated term {:?}, current term: {:?}", input.term, current_term);
+            slog::warn!(
+                self.logger,
+                "Received leader heartbeat for outdated term {:?}, current term: {:?}",
+                input.term,
+                current_term
+            );
             return;
         }
 
@@ -623,9 +639,11 @@ where
             Some(leader_state) => {
                 let peer_state = match leader_state.peer_state_mut(peer.metadata.replica_id()) {
                     Some(ps) => ps,
-                    None => return Err(HandleLeaderTimerError::LeaderStateMissingPeer {
-                        leader_state_tracker_peers: leader_state.peer_ids(),
-                    })
+                    None => {
+                        return Err(HandleLeaderTimerError::LeaderStateMissingPeer {
+                            leader_state_tracker_peers: leader_state.peer_ids(),
+                        })
+                    }
                 };
 
                 let (proto_request, descriptor) = leader_timer_handler::new_append_entries_request(
@@ -820,7 +838,7 @@ mod leader_timer_handler {
     use crate::replica::commit_log::RaftLog;
     use crate::replica::election::PeerState;
     use crate::replica::replica::HandleLeaderTimerError;
-    use crate::replica::{AppendEntriesReplyFromPeerDescriptor, RaftCommitLogEntry, ReplicaId, Term};
+    use crate::replica::{AppendEntriesReplyFromPeerDescriptor, RaftLogEntry, ReplicaId, Term};
 
     pub(super) fn new_append_entries_request<L>(
         current_term: Term,
@@ -830,7 +848,7 @@ mod leader_timer_handler {
         commit_log: &RaftLog<L>,
     ) -> Result<(ProtoAppendEntriesReq, AppendEntriesReplyFromPeerDescriptor), HandleLeaderTimerError>
     where
-        L: Log<RaftCommitLogEntry>,
+        L: Log<RaftLogEntry>,
     {
         // Simplicity vs throughput tradeoff. We're just going to allow 1 outstanding request per
         // peer; no pipelining. This should not limit throughput too badly however, as we will still
@@ -883,7 +901,7 @@ mod leader_timer_handler {
         my_id: ReplicaId,
         previous_log_entry_metadata: Option<(Term, Index)>,
         commit_index: Option<Index>,
-        new_entries: Vec<RaftCommitLogEntry>,
+        new_entries: Vec<RaftLogEntry>,
     ) -> ProtoAppendEntriesReq {
         let commit_index_u64 = match commit_index {
             None => 0,
@@ -917,9 +935,9 @@ mod leader_timer_handler {
 #[cfg(test)]
 mod tests {
     use crate::commitlog::{InMemoryLog, Index};
-    use crate::replica::{RaftCommitLogEntry, Replica, VolatileLocalState};
+    use crate::replica::{RaftLogEntry, Replica, VolatileLocalState};
 
-    type Repl = Replica<InMemoryLog<RaftCommitLogEntry>, VolatileLocalState>;
+    type Repl = Replica<InMemoryLog<RaftLogEntry>, VolatileLocalState>;
 
     fn opt_index(v: u64) -> Option<Index> {
         if v == 0 {

@@ -2,8 +2,8 @@ use crate::actor;
 use crate::replica;
 use rand::Rng;
 use std::ops::RangeInclusive;
+use std::sync::{Arc, Mutex, Weak};
 use tokio::time::{Duration, Instant};
-use std::sync::{Mutex, Arc, Weak};
 
 pub struct LeaderTimerHandle {
     state: Arc<LeaderTimerHandleState>,
@@ -16,7 +16,8 @@ struct LeaderTimerHandleState {
 
 impl LeaderTimerHandleState {
     pub fn reset_heartbeat_timer(&self) {
-        self.next_heartbeat_time.replace(Instant::now() + self.heartbeat_duration);
+        self.next_heartbeat_time
+            .replace(Instant::now() + self.heartbeat_duration);
     }
 }
 
@@ -41,9 +42,7 @@ impl LeaderTimerHandle {
             event,
         ));
 
-        LeaderTimerHandle {
-            state: handle,
-        }
+        LeaderTimerHandle { state: handle }
     }
 
     pub fn reset_heartbeat_timer(&self) {
@@ -158,7 +157,7 @@ impl FollowerTimerHandle {
 
 #[derive(Clone, Default)]
 struct SharedOption<T> {
-    data: Arc<Mutex<Option<T>>>
+    data: Arc<Mutex<Option<T>>>,
 }
 
 impl<T> SharedOption<T> {
@@ -169,7 +168,10 @@ impl<T> SharedOption<T> {
     }
 
     pub fn replace(&self, new_data: T) {
-        self.data.lock().expect("SharedOption.replace() mutex guard poison").replace(new_data);
+        self.data
+            .lock()
+            .expect("SharedOption.replace() mutex guard poison")
+            .replace(new_data);
     }
 
     pub fn take(&self) -> Option<T> {
