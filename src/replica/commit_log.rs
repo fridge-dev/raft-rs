@@ -79,14 +79,15 @@ where
 
     /// Remove anything starting at `index` and later.
     pub fn truncate(&mut self, index: Index) -> Result<(), io::Error> {
-        let new_latest_entry_index = index.minus(1); // TODO:1.5 panic risk, fix it
-        let new_latest_entry_metadata = self
-            .log
-            .read(new_latest_entry_index)?
-            .map(|latest_entry| (latest_entry.term, new_latest_entry_index));
+        let mut new_latest_entry_metadata = None;
+        if let Some(new_latest_entry_index) = index.checked_minus(1) {
+            new_latest_entry_metadata = self
+                .read(new_latest_entry_index)?
+                .map(|latest_entry| (latest_entry.term, new_latest_entry_index));
+        }
 
-        // Only update log after we've successfully read what new state will be. I guess
-        // reading after updating helps guarantee we can read in the future. Hmm.
+        // Only update log after we've successfully read what new state will be. On the other hand,
+        // I guess reading after updating helps guarantee we can read in the future. Hmm.
         self.log.truncate(index);
 
         self.latest_entry_metadata = new_latest_entry_metadata;
