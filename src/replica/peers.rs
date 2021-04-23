@@ -27,20 +27,35 @@ impl fmt::Debug for ReplicaId {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct ReplicaBlob(u128);
+
+impl ReplicaBlob {
+    pub fn new(blob: u128) -> Self {
+        ReplicaBlob(blob)
+    }
+
+    pub fn into_inner(self) -> u128 {
+        self.0
+    }
+}
+
 /// ReplicaMetadata is identity/connection metadata describing a replica.
 #[derive(Clone)]
 pub struct ReplicaMetadata {
     id: ReplicaId,
     ip: Ipv4Addr,
     port: u16,
+    blob: ReplicaBlob,
 }
 
 impl ReplicaMetadata {
-    pub fn new(replica_id: String, ip_addr: Ipv4Addr, port: u16) -> Self {
+    pub fn new(replica_id: ReplicaId, ip_addr: Ipv4Addr, port: u16, blob: ReplicaBlob) -> Self {
         ReplicaMetadata {
-            id: ReplicaId(replica_id),
+            id: replica_id,
             ip: ip_addr,
             port,
+            blob,
         }
     }
 
@@ -52,8 +67,8 @@ impl ReplicaMetadata {
         self.ip
     }
 
-    pub fn port(&self) -> u16 {
-        self.port
+    pub fn info_blob(&self) -> ReplicaBlob {
+        self.blob
     }
 }
 

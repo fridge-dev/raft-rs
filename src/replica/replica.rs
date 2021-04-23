@@ -98,9 +98,9 @@ where
             CurrentLeader::Other(leader_id) => match self.cluster_tracker.metadata(&leader_id) {
                 Some(leader) => {
                     return Err(EnqueueForReplicationError::LeaderRedirect {
-                        leader_id: leader_id.into_inner(),
+                        leader_id,
                         leader_ip: leader.ip_addr(),
-                        leader_port: leader.port(),
+                        leader_blob: leader.info_blob(),
                     });
                 }
                 None => {

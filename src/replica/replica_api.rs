@@ -1,6 +1,6 @@
 use crate::commitlog::Index;
 use crate::replica::local_state::Term;
-use crate::replica::peers::ReplicaId;
+use crate::replica::peers::{ReplicaBlob, ReplicaId};
 use bytes::Bytes;
 use std::io;
 use std::net::Ipv4Addr;
@@ -20,9 +20,9 @@ pub struct EnqueueForReplicationOutput {
 pub enum EnqueueForReplicationError {
     #[error("I'm not leader")]
     LeaderRedirect {
-        leader_id: String,
+        leader_id: ReplicaId,
         leader_ip: Ipv4Addr,
-        leader_port: u16,
+        leader_blob: ReplicaBlob,
     },
 
     // Can be retried with exponential backoff with recommended initial delay of 200ms. Likely an

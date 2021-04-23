@@ -1,15 +1,34 @@
 use crate::actor::{ActorClient, ReplicaActor};
-use crate::api::client;
-use crate::api::configuration::RaftOptionsValidated;
+use crate::api::options::RaftOptionsValidated;
+use crate::api::{commit_stream, MemberInfoBlob};
 use crate::commitlog::InMemoryLog;
 use crate::replica::{ClusterTracker, Replica, ReplicaConfig, VolatileLocalState};
 use crate::server::RpcServer;
-use crate::{api, replica, CommitStream, RaftClientConfig, ReplicatedLog};
+use crate::{api, replica, CommitStream, RaftOptions, ReplicatedLog};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::io;
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use tokio::sync::mpsc;
+
+// Name could be better
+pub struct CreatedClient {
+    pub replication_log: ReplicatedLog,
+    pub commit_stream: CommitStream,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClientCreationError {
+    #[error("Invalid cluster info")]
+    InvalidClusterInfo(Box<dyn Error>),
+    #[error("Illegal options for configuring client: {0}")]
+    IllegalClientOptions(String),
+    #[error("Log initialization failure")]
+    LogInitialization(io::Error),
+    // We will need to relax this later when adding membership changes.
+    #[error("my replica ID not in cluster config")]
+    MeNotInCluster,
+}
 
 pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClient, ClientCreationError> {
     let root_logger = config.info_logger;
@@ -19,7 +38,7 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     let cluster_tracker = try_create_cluster_tracker(root_logger.clone(), config.cluster_info.clone()).await?;
     let local_state = VolatileLocalState::new(cluster_tracker.my_replica_id().clone());
 
-    let (commit_stream_publisher, commit_stream) = client::create_commit_stream();
+    let (commit_stream_publisher, commit_stream) = commit_stream::create_commit_stream();
     let (actor_queue_tx, actor_queue_rx) = mpsc::channel(10);
     let actor_client = ActorClient::new(actor_queue_tx);
 
@@ -45,7 +64,7 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     let replica_raft_server = RpcServer::new(root_logger.clone(), actor_client.clone());
     tokio::spawn(replica_raft_server.run(server_addr));
 
-    let replication_log = client::new_replicated_log(actor_client);
+    let replication_log = ReplicatedLog::new(actor_client);
 
     Ok(CreatedClient {
         replication_log,
@@ -53,36 +72,37 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     })
 }
 
-// Name could be better
-pub struct CreatedClient {
-    pub replication_log: ReplicatedLog,
-    pub commit_stream: CommitStream,
+pub struct RaftClientConfig {
+    // A directory where we can create files and sub-directories to support the commit log.
+    pub commit_log_directory: String, // TODO:3 use `Path`
+    pub info_logger: slog::Logger,
+    pub cluster_info: ClusterInfo,
+    pub options: RaftOptions,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ClientCreationError {
-    #[error("Invalid cluster info")]
-    InvalidClusterInfo(Box<dyn Error>),
-    #[error("Illegal options for configuring client: {0}")]
-    IllegalClientOptions(String),
-    #[error("Log initialization failure")]
-    LogInitialization(io::Error),
-    // We will need to relax this later when adding membership changes.
-    #[error("my replica ID not in cluster config")]
-    MeNotInCluster,
+#[derive(Clone)]
+pub struct ClusterInfo {
+    pub my_replica_id: String,
+    pub cluster_members: Vec<MemberInfo>,
 }
 
-fn get_my_server_addr(cluster_info: &api::ClusterInfo) -> Result<SocketAddr, ClientCreationError> {
-    for member_info in cluster_info.cluster_members.iter() {
-        if member_info.replica_id == cluster_info.my_replica_id {
-            return Ok(SocketAddr::V4(SocketAddrV4::new(
-                member_info.replica_ip_addr,
-                member_info.replica_port,
-            )));
-        }
+#[derive(Clone)]
+pub struct MemberInfo {
+    pub replica_id: String,
+    pub ip_addr: Ipv4Addr,
+    pub raft_rpc_port: u16,
+    pub peer_redirect_info_blob: MemberInfoBlob,
+}
+
+impl From<api::MemberInfo> for replica::ReplicaMetadata {
+    fn from(member_info: api::MemberInfo) -> Self {
+        replica::ReplicaMetadata::new(
+            replica::ReplicaId::new(member_info.replica_id),
+            member_info.ip_addr,
+            member_info.raft_rpc_port,
+            replica::ReplicaBlob::new(member_info.peer_redirect_info_blob.into_inner()),
+        )
     }
-
-    Err(ClientCreationError::MeNotInCluster)
 }
 
 async fn try_create_cluster_tracker(
@@ -106,12 +126,15 @@ async fn try_create_cluster_tracker(
         .map_err(|e| ClientCreationError::InvalidClusterInfo(e.into()))
 }
 
-impl From<api::MemberInfo> for replica::ReplicaMetadata {
-    fn from(member_info: api::MemberInfo) -> Self {
-        replica::ReplicaMetadata::new(
-            member_info.replica_id,
-            member_info.replica_ip_addr,
-            member_info.replica_port,
-        )
+fn get_my_server_addr(cluster_info: &api::ClusterInfo) -> Result<SocketAddr, ClientCreationError> {
+    for member_info in cluster_info.cluster_members.iter() {
+        if member_info.replica_id == cluster_info.my_replica_id {
+            return Ok(SocketAddr::V4(SocketAddrV4::new(
+                member_info.ip_addr,
+                member_info.raft_rpc_port,
+            )));
+        }
     }
+
+    Err(ClientCreationError::MeNotInCluster)
 }

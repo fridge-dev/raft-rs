@@ -21,35 +21,40 @@ async fn main() {
 }
 
 fn fake_cluster() -> raft::ClusterInfo {
-    let replica_port = 2021;
+    let raft_rpc_port = 2021;
 
     raft::ClusterInfo {
         my_replica_id: "id-1".into(),
         cluster_members: vec![
             raft::MemberInfo {
                 replica_id: "id-1".into(),
-                replica_ip_addr: Ipv4Addr::from(0xFACE),
-                replica_port,
+                ip_addr: Ipv4Addr::from(0xFACE),
+                raft_rpc_port,
+                peer_redirect_info_blob: raft::MemberInfoBlob::new(1111),
             },
             raft::MemberInfo {
                 replica_id: "id-2".into(),
-                replica_ip_addr: Ipv4Addr::from(0xBEEF),
-                replica_port,
+                ip_addr: Ipv4Addr::from(0xBEEF),
+                raft_rpc_port,
+                peer_redirect_info_blob: raft::MemberInfoBlob::new(2222),
             },
             raft::MemberInfo {
                 replica_id: "id-3".into(),
-                replica_ip_addr: Ipv4Addr::from(0x1337),
-                replica_port,
+                ip_addr: Ipv4Addr::from(0x1337),
+                raft_rpc_port,
+                peer_redirect_info_blob: raft::MemberInfoBlob::new(3333),
             },
             raft::MemberInfo {
                 replica_id: "id-4".into(),
-                replica_ip_addr: Ipv4Addr::from(0xDEAF),
-                replica_port,
+                ip_addr: Ipv4Addr::from(0xDEAF),
+                raft_rpc_port,
+                peer_redirect_info_blob: raft::MemberInfoBlob::new(4444),
             },
             raft::MemberInfo {
                 replica_id: "id-5".into(),
-                replica_ip_addr: Ipv4Addr::from(0xBEEB),
-                replica_port,
+                ip_addr: Ipv4Addr::from(0xBEEB),
+                raft_rpc_port,
+                peer_redirect_info_blob: raft::MemberInfoBlob::new(5555),
             },
         ],
     }
@@ -87,7 +92,6 @@ mod accumulator_impl {
     use raft::RaftOptions;
     use std::collections::HashMap;
     use std::error::Error;
-    use tokio::time::Duration;
 
     pub struct Accumulator {
         replicated_log: raft::ReplicatedLog,

@@ -1,30 +1,6 @@
-//! This mod is responsible for configuring and creating an instance of `RaftClientApi` for application to use.
-
 use crate::api::factory::ClientCreationError;
 use std::convert::TryFrom;
-use std::net::Ipv4Addr;
 use tokio::time::Duration;
-
-pub struct RaftClientConfig {
-    // A directory where we can create files and sub-directories to support the commit log.
-    pub commit_log_directory: String, // TODO:3 use `Path`
-    pub info_logger: slog::Logger,
-    pub cluster_info: ClusterInfo,
-    pub options: RaftOptions,
-}
-
-#[derive(Clone)]
-pub struct ClusterInfo {
-    pub my_replica_id: String,
-    pub cluster_members: Vec<MemberInfo>,
-}
-
-#[derive(Clone)]
-pub struct MemberInfo {
-    pub replica_id: String,
-    pub replica_ip_addr: Ipv4Addr,
-    pub replica_port: u16,
-}
 
 #[derive(Clone, Default)]
 pub struct RaftOptions {

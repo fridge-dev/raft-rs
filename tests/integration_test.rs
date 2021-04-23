@@ -138,8 +138,9 @@ fn config(id: usize, num_members: usize) -> raft::RaftClientConfig {
 fn member_info(id: usize) -> raft::MemberInfo {
     raft::MemberInfo {
         replica_id: repl_id(id),
-        replica_ip_addr: Ipv4Addr::from([127, 0, 0, 1]),
-        replica_port: 3000 + id as u16,
+        ip_addr: Ipv4Addr::from([127, 0, 0, 1]),
+        raft_rpc_port: 3000 + id as u16,
+        peer_redirect_info_blob: raft::MemberInfoBlob::new(4000 + id as u128),
     }
 }
 
