@@ -12,8 +12,8 @@ use tonic::codegen::http::uri;
 pub struct ReplicaId(String);
 
 impl ReplicaId {
-    pub fn new(replica_id: String) -> Self {
-        ReplicaId(replica_id)
+    pub fn new(replica_id: impl Into<String>) -> Self {
+        ReplicaId(replica_id.into())
     }
 
     pub fn into_inner(self) -> String {

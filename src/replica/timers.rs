@@ -1,23 +1,25 @@
 use crate::actor;
 use crate::replica;
+use crate::replica::timers::time::{Clock, RealClock};
 use rand::Rng;
 use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex, Weak};
 use tokio::time::{Duration, Instant};
 
-pub struct LeaderTimerHandle {
-    state: Arc<LeaderTimerHandleState>,
+pub struct LeaderTimerHandle<C: Clock = RealClock> {
+    state: Arc<LeaderTimerHandleState<C>>,
 }
 
-struct LeaderTimerHandleState {
+struct LeaderTimerHandleState<C: Clock> {
     heartbeat_duration: Duration,
     next_heartbeat_time: SharedOption<Instant>,
+    clock: C,
 }
 
-impl LeaderTimerHandleState {
+impl<C: Clock> LeaderTimerHandleState<C> {
     pub fn reset_heartbeat_timer(&self) {
-        self.next_heartbeat_time
-            .replace(Instant::now() + self.heartbeat_duration);
+        let new_timeout = self.clock.now() + self.heartbeat_duration;
+        self.next_heartbeat_time.replace(new_timeout);
     }
 }
 
@@ -28,32 +30,49 @@ impl LeaderTimerHandle {
         peer_id: replica::ReplicaId,
         term: replica::Term,
     ) -> Self {
+        Self::spawn_background_task_with_clock(heartbeat_duration, actor_client, peer_id, term, RealClock)
+    }
+}
+
+impl<C: Clock + Send + Sync + 'static> LeaderTimerHandle<C> {
+    // For tests
+    fn spawn_background_task_with_clock(
+        heartbeat_duration: Duration,
+        actor_client: actor::ActorClient,
+        peer_id: replica::ReplicaId,
+        term: replica::Term,
+        clock: C,
+    ) -> Self {
         let shared_opt = SharedOption::new();
         let handle = Arc::new(LeaderTimerHandleState {
             heartbeat_duration,
             next_heartbeat_time: shared_opt.clone(),
+            clock: clock.clone(),
         });
         let event = replica::LeaderTimerTick { peer_id, term };
 
         tokio::task::spawn(Self::leader_timer_task(
             Arc::downgrade(&handle),
-            shared_opt.clone(),
+            shared_opt,
             actor_client,
             event,
+            clock,
         ));
 
         LeaderTimerHandle { state: handle }
     }
 
+    /// This updates the timestamp when we will next notify the actor to send AE to this peer.
     pub fn reset_heartbeat_timer(&self) {
         self.state.reset_heartbeat_timer();
     }
 
     async fn leader_timer_task(
-        weak_handle: Weak<LeaderTimerHandleState>,
+        weak_handle: Weak<LeaderTimerHandleState<C>>,
         next_heartbeat_time: SharedOption<Instant>,
         actor_client: actor::ActorClient,
         event: replica::LeaderTimerTick,
+        mut clock: C,
     ) {
         // Eagerly publish timer event before entering first tick loop. This will trigger newly
         // elected leader to broadcast its heartbeat sooner than the heartbeat duration.
@@ -64,7 +83,7 @@ impl LeaderTimerHandle {
                 Some(wake_time) => {
                     // We've sent a proactive heartbeat (due to new client request) to this peer,
                     // so we don't need periodic heartbeat until the next heartbeat duration.
-                    tokio::time::sleep_until(wake_time).await;
+                    clock.sleep_until(wake_time).await;
                 }
                 None => {
                     // We slept until the previous `next_heartbeat_time` and there's no updated
@@ -90,7 +109,7 @@ impl LeaderTimerHandle {
 
 pub struct FollowerTimerHandle {
     // We use flume instead of tokio because we need non-blocking try_recv() and tokio's was removed in 1.0
-    // TODO:2 optimize to use `SharedOption`
+    // TODO:3 optimize to use `SharedOption` but would need to account for the 3 try_recv branches.
     wake_time_queue: flume::Sender<Instant>,
     timeout_range: RangeInclusive<Duration>,
 }
@@ -179,6 +198,132 @@ impl<T> SharedOption<T> {
     }
 }
 
+mod time {
+    use tokio::sync::watch;
+    use tokio::time::{Duration, Instant};
+
+    #[async_trait::async_trait]
+    pub trait Clock: Clone {
+        fn now(&self) -> Instant;
+        async fn sleep_until(&mut self, deadline: Instant);
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct RealClock;
+
+    #[async_trait::async_trait]
+    impl Clock for RealClock {
+        fn now(&self) -> Instant {
+            tokio::time::Instant::now()
+        }
+
+        async fn sleep_until(&mut self, deadline: Instant) {
+            tokio::time::sleep_until(deadline).await;
+        }
+    }
+
+    pub fn mocked_clock() -> (MockClock, MockClockController) {
+        let (tx, rx) = watch::channel(Instant::now());
+        let sleeper = MockClock { current_time: rx };
+        let controller = MockClockController { current_time: tx };
+
+        (sleeper, controller)
+    }
+
+    #[derive(Clone)]
+    pub struct MockClock {
+        current_time: watch::Receiver<Instant>,
+    }
+
+    #[async_trait::async_trait]
+    impl Clock for MockClock {
+        fn now(&self) -> Instant {
+            *self.current_time.borrow()
+        }
+
+        async fn sleep_until(&mut self, deadline: Instant) {
+            loop {
+                if *self.current_time.borrow() >= deadline {
+                    return;
+                }
+
+                self.current_time.changed().await.expect("Controller dropped");
+            }
+        }
+    }
+
+    pub struct MockClockController {
+        current_time: watch::Sender<Instant>,
+    }
+
+    impl MockClockController {
+        pub fn current_time(&self) -> Instant {
+            *self.current_time.borrow()
+        }
+
+        pub fn advance(&mut self, duration: Duration) {
+            let now = *self.current_time.borrow();
+            let new_now = now + duration;
+            self.current_time.send(new_now).expect("MockTime dropped");
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tokio::sync::mpsc;
+        use tokio::time::Duration;
+
+        /// Of course we test our test utility! How else will we know it works.
+        #[tokio::test]
+        async fn mock_clock() {
+            let tick_duration = Duration::from_millis(500);
+            let (tx, mut rx) = mpsc::unbounded_channel();
+
+            let (mut mock_clock, mut controller) = mocked_clock();
+            let test_start_time = controller.current_time();
+
+            // Setup async ticker task
+            tokio::spawn(async move {
+                let mut next_wake = test_start_time;
+                loop {
+                    next_wake += tick_duration;
+                    mock_clock.sleep_until(next_wake).await;
+                    tx.send(()).expect("receiver shouldn't drop");
+                }
+            });
+
+            // Create half-tick offset just to make it easier to follow and avoid off-by-1.
+            controller.advance(tick_duration / 2);
+
+            // Validate initial state
+            tokio::time::timeout(tick_duration * 2, rx.recv())
+                .await
+                .expect_err("Expected timeout");
+
+            // Advance one tick duration
+            controller.advance(tick_duration);
+            rx.recv().await.unwrap();
+            tokio::time::timeout(tick_duration * 2, rx.recv())
+                .await
+                .expect_err("Expected timeout");
+
+            // Advance multiple ticks at once
+            controller.advance(tick_duration * 3);
+            rx.recv().await.unwrap();
+            rx.recv().await.unwrap();
+            rx.recv().await.unwrap();
+            tokio::time::timeout(tick_duration * 2, rx.recv())
+                .await
+                .expect_err("Expected timeout");
+
+            // Assert amount of time that has passed, 4.5 tick durations
+            let time_passed = tick_duration * 9 / 2;
+            assert_eq!(controller.current_time(), test_start_time + time_passed);
+        }
+    }
+}
+
 #[allow(dead_code)] // keeping around as a reference
 mod stop_signal {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -216,4 +361,107 @@ mod stop_signal {
     }
 }
 
-// TODO:1.5 tests to validate that timers do what we expect
+#[cfg(test)]
+mod tests {
+    use crate::actor::{ActorClient, Event};
+    use crate::replica::timers::time;
+    use crate::replica::timers::LeaderTimerHandle;
+    use crate::replica::{LeaderTimerTick, ReplicaId, Term};
+    use std::fmt::Debug;
+    use tokio::sync::mpsc;
+    use tokio::time::Duration;
+
+    struct TestUtilReceiver<T> {
+        rx: mpsc::Receiver<T>,
+    }
+
+    impl<T: Debug> TestUtilReceiver<T> {
+        pub fn new(rx: mpsc::Receiver<T>) -> Self {
+            TestUtilReceiver { rx }
+        }
+
+        pub async fn recv(&mut self) -> T {
+            self.rx.recv().await.expect("Expected value")
+        }
+
+        pub async fn recv_assert_closed(&mut self) {
+            if let Some(_) = self.rx.recv().await {
+                panic!("Expected None");
+            }
+        }
+
+        pub async fn recv_assert_timeout(&mut self, timeout: Duration) {
+            tokio::time::timeout(timeout, self.rx.recv())
+                .await
+                .expect_err("Expected timeout");
+        }
+    }
+
+    struct TestUtilActor {
+        receiver: TestUtilReceiver<Event>,
+        timeout: Duration,
+        expected_leader_heartbeat: LeaderTimerTick,
+    }
+
+    impl TestUtilActor {
+        pub fn new(actor_queue_rx: mpsc::Receiver<Event>, peer_id: ReplicaId, term: Term) -> Self {
+            TestUtilActor {
+                receiver: TestUtilReceiver::new(actor_queue_rx),
+                timeout: Duration::from_millis(10),
+                expected_leader_heartbeat: LeaderTimerTick { peer_id, term },
+            }
+        }
+
+        pub async fn assert_leader_heartbeat_event(&mut self) {
+            if let Event::LeaderTimer(event) = self.receiver.recv().await {
+                assert_eq!(event, self.expected_leader_heartbeat);
+            } else {
+                panic!("Unexpected event");
+            }
+        }
+
+        pub async fn assert_no_event(&mut self) {
+            self.receiver.recv_assert_timeout(self.timeout).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn leader_timer_handle_basic_functionality() {
+        // -- setup --
+        let heartbeat_timeout = Duration::from_millis(50);
+        let (tx, rx) = mpsc::channel(10);
+        let actor_client = ActorClient::new(tx);
+        let peer_id = ReplicaId::new("peer-123");
+        let term = Term::new(10);
+        let mut actor_queue = TestUtilActor::new(rx, peer_id.clone(), term);
+
+        let (mock_clock, mut mock_clock_controller) = time::mocked_clock();
+
+        // -- execute & verify --
+
+        // 1. Spawn task, assert there is one event in the queue.
+        let timer_handle = LeaderTimerHandle::spawn_background_task_with_clock(
+            heartbeat_timeout,
+            actor_client,
+            peer_id,
+            term,
+            mock_clock,
+        );
+
+        actor_queue.assert_leader_heartbeat_event().await;
+        actor_queue.assert_leader_heartbeat_event().await;
+        actor_queue.assert_no_event().await;
+
+        // 2. Advance time and receive heartbeat
+        mock_clock_controller.advance(heartbeat_timeout);
+        actor_queue.assert_leader_heartbeat_event().await;
+        actor_queue.assert_no_event().await;
+
+        // 3. Drop handle and assert closed
+        drop(timer_handle);
+        mock_clock_controller.advance(heartbeat_timeout);
+        actor_queue.receiver.recv_assert_closed().await;
+    }
+
+    // TODO:1.5 more tests to validate that timers do what we expect
+}
