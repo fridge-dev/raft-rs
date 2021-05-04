@@ -74,10 +74,10 @@ impl<C: Clock + Send + Sync + 'static> LeaderTimerHandle<C> {
         event: replica::LeaderTimerTick,
         mut clock: C,
     ) {
-        // Eagerly publish timer event before entering first tick loop. This will trigger newly
-        // elected leader to broadcast its heartbeat sooner than the heartbeat duration.
-        actor_client.leader_timer(event.clone()).await;
-
+        // Notice: The first execution of the loop has an empty SharedOption, so the first iteration
+        // will result in immediately publishing the timer event. This is ideal, because we want to
+        // eagerly publish the  timer event to trigger leader to broadcast its heartbeat ASAP to the
+        // newly established leader-follower pair (e.g. newly elected leader, new cluster member).
         loop {
             match next_heartbeat_time.take() {
                 Some(wake_time) => {
@@ -90,17 +90,16 @@ impl<C: Clock + Send + Sync + 'static> LeaderTimerHandle<C> {
                     // `next_heartbeat_time`, which means we haven't sent a message to this peer
                     // in a while.
 
-                    // First check if timer handle is still alive, and reset heartbeat timer if so.
+                    // Check if timer handle is still alive.
                     if let Some(handle) = weak_handle.upgrade() {
+                        // Trigger a heartbeat. Reset heartbeat timer after the await.
+                        actor_client.leader_timer(event.clone()).await;
                         handle.reset_heartbeat_timer();
                     } else {
                         // The timer handle has dropped, which means we are no longer a leader for
                         // the same term. Exit the task.
                         return;
                     }
-
-                    // Trigger a heartbeat.
-                    actor_client.leader_timer(event.clone()).await;
                 }
             }
         }
@@ -223,9 +222,13 @@ mod time {
     }
 
     pub fn mocked_clock() -> (MockClock, MockClockController) {
-        let (tx, rx) = watch::channel(Instant::now());
+        let now = Instant::now();
+        let (tx, rx) = watch::channel(now);
         let sleeper = MockClock { current_time: rx };
-        let controller = MockClockController { current_time: tx };
+        let controller = MockClockController {
+            current_time: tx,
+            time_of_instantiation: now,
+        };
 
         (sleeper, controller)
     }
@@ -254,6 +257,7 @@ mod time {
 
     pub struct MockClockController {
         current_time: watch::Sender<Instant>,
+        time_of_instantiation: Instant,
     }
 
     impl MockClockController {
@@ -261,6 +265,20 @@ mod time {
             *self.current_time.borrow()
         }
 
+        pub fn elapsed_time(&self) -> Duration {
+            self.current_time() - self.time_of_instantiation
+        }
+
+        /// Advancing by large steps of time can cause unexpected state in `sleep_until()` usage.
+        /// The only promise of mock `sleep_until` is that it will return when `now` is at or past
+        /// the `deadline`. For example, if you call...
+        ///
+        /// - sleep_until(now + 1ms), then
+        /// - advance(5 min)
+        ///
+        /// ...then `sleep_until` will return to its caller when `now` is roughly 5 minutes past the
+        /// provided `deadline`. In general, advance the mock clock at much smaller increments than
+        /// the granularity at which you wish to observe things. Much like a real clock.
         pub fn advance(&mut self, duration: Duration) {
             let now = *self.current_time.borrow();
             let new_now = now + duration;
@@ -318,8 +336,7 @@ mod time {
                 .expect_err("Expected timeout");
 
             // Assert amount of time that has passed, 4.5 tick durations
-            let time_passed = tick_duration * 9 / 2;
-            assert_eq!(controller.current_time(), test_start_time + time_passed);
+            assert_eq!(controller.elapsed_time(), tick_duration * 9 / 2);
         }
     }
 }
@@ -426,9 +443,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn leader_timer_handle_basic_functionality() {
+    async fn leader_timer_handle_lifecycle() {
         // -- setup --
-        let heartbeat_timeout = Duration::from_millis(50);
+        let heartbeat_timeout = Duration::from_millis(100);
         let (tx, rx) = mpsc::channel(10);
         let actor_client = ActorClient::new(tx);
         let peer_id = ReplicaId::new("peer-123");
@@ -449,19 +466,75 @@ mod tests {
         );
 
         actor_queue.assert_leader_heartbeat_event().await;
+        actor_queue.assert_no_event().await;
+
+        // 2. Advance time and receive heartbeat many times
+        for _ in 0..5 {
+            mock_clock_controller.advance(heartbeat_timeout);
+            actor_queue.assert_leader_heartbeat_event().await;
+            actor_queue.assert_no_event().await;
+        }
+
+        // 3. Advance time by a big leap, still receive single heartbeat
+        mock_clock_controller.advance(heartbeat_timeout * 5);
         actor_queue.assert_leader_heartbeat_event().await;
         actor_queue.assert_no_event().await;
 
-        // 2. Advance time and receive heartbeat
-        mock_clock_controller.advance(heartbeat_timeout);
-        actor_queue.assert_leader_heartbeat_event().await;
-        actor_queue.assert_no_event().await;
-
-        // 3. Drop handle and assert closed
+        // 4. Drop handle and assert closed
         drop(timer_handle);
         mock_clock_controller.advance(heartbeat_timeout);
         actor_queue.receiver.recv_assert_closed().await;
     }
 
-    // TODO:1.5 more tests to validate that timers do what we expect
+    #[tokio::test]
+    async fn leader_timer_handle_resetting_timeout() {
+        // -- setup --
+        let heartbeat_timeout = Duration::from_millis(100);
+        let (tx, rx) = mpsc::channel(10);
+        let actor_client = ActorClient::new(tx);
+        let peer_id = ReplicaId::new("peer-123");
+        let term = Term::new(10);
+        let mut actor_queue = TestUtilActor::new(rx, peer_id.clone(), term);
+
+        let (mock_clock, mut mock_clock_controller) = time::mocked_clock();
+
+        // -- execute & verify --
+
+        // 1. Spawn task, assert there is one event in the queue.
+        let timer_handle = LeaderTimerHandle::spawn_background_task_with_clock(
+            heartbeat_timeout,
+            actor_client,
+            peer_id,
+            term,
+            mock_clock,
+        );
+
+        actor_queue.assert_leader_heartbeat_event().await;
+        actor_queue.assert_no_event().await;
+
+        // 2a. Repeatedly advance time by 0.5 and reset heartbeat timer
+        for _ in 0..5 {
+            mock_clock_controller.advance(heartbeat_timeout / 2);
+            timer_handle.reset_heartbeat_timer();
+        }
+        // 2b. Assert no heartbeat (because we reset it!).
+        actor_queue.assert_no_event().await;
+
+        // Sanity check that T=2.5.
+        // Notice heartbeat timeout should be set for T=3.5.
+        assert_eq!(mock_clock_controller.elapsed_time(), heartbeat_timeout * 5 / 2);
+
+        // 3a. Advance time to T=3, assert no heartbeat (because we reset it!)
+        mock_clock_controller.advance(heartbeat_timeout / 2);
+        actor_queue.assert_no_event().await;
+
+        // 3b. Advance time to T=3.5, assert heartbeat (timeout occurs)
+        mock_clock_controller.advance(heartbeat_timeout / 2);
+        actor_queue.assert_leader_heartbeat_event().await;
+
+        // Sanity check that T=3.5
+        assert_eq!(mock_clock_controller.elapsed_time(), heartbeat_timeout * 7 / 2);
+    }
+
+    // TODO:1.5 follower timer tests
 }
