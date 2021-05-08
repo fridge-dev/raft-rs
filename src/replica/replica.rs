@@ -263,8 +263,9 @@ where
                     None => {
                         slog::info!(
                             self.logger,
-                            "Received vote for term {:?} after transitioning to a different election state",
-                            reply.term
+                            "Received vote for term {:?} after transitioning to a election state: {:?}",
+                            reply.term,
+                            self.election_state,
                         );
                         return;
                     }
