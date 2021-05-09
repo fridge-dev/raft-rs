@@ -107,11 +107,10 @@ impl<C: Clock + Send + Sync + 'static> LeaderTimerHandle<C> {
 }
 
 pub struct FollowerTimerHandle<C: Clock = RealClock> {
-    // We use flume instead of tokio because we need non-blocking try_recv() and tokio's was removed in 1.0
-    // TODO:3 optimize to use `SharedOption` to have better clobber-update behavior. Also need `StopSignal` to account for all 3 try_recv branches.
-    wake_time_queue: flume::Sender<Instant>,
+    next_wake_time: SharedOption<Instant>,
     timeout_range: RangeInclusive<Duration>,
     clock: C,
+    _to_drop: stop_signal::Stopper,
 }
 
 impl FollowerTimerHandle {
@@ -132,30 +131,30 @@ impl<C: Clock + Send + Sync + 'static> FollowerTimerHandle<C> {
         actor_client: actor::ActorClient,
         clock: C,
     ) -> Self {
-        let (tx, rx) = flume::unbounded();
+        let shared_opt = SharedOption::new();
+        let (stopper, stop_check) = stop_signal::new();
 
         let handle = FollowerTimerHandle {
-            wake_time_queue: tx,
+            next_wake_time: shared_opt.clone(),
             timeout_range: RangeInclusive::new(min_timeout, max_timeout),
             clock: clock.clone(),
+            _to_drop: stopper,
         };
         handle.reset_timeout();
 
-        tokio::task::spawn(Self::follower_timer_task(rx, actor_client, clock, min_timeout));
+        tokio::task::spawn(Self::follower_timer_task(
+            shared_opt,
+            stop_check,
+            actor_client,
+            clock,
+            min_timeout,
+        ));
 
         handle
     }
 
     pub fn reset_timeout(&self) {
-        match self.wake_time_queue.try_send(self.random_wake_time()) {
-            Ok(_) => {}
-            Err(flume::TrySendError::Disconnected(_)) => {
-                panic!("Follower Timeout task receiver should never stop until we close the queue. Bug wtf?")
-            }
-            Err(flume::TrySendError::Full(_)) => {
-                panic!("We're using unbounded queue. This should never happen. #FollowerTimeoutTask")
-            }
-        }
+        self.next_wake_time.replace(self.random_wake_time());
     }
 
     fn random_wake_time(&self) -> Instant {
@@ -166,30 +165,35 @@ impl<C: Clock + Send + Sync + 'static> FollowerTimerHandle<C> {
     // timeout_backoff is an impl detail (not from paper) which is just a static amount of time
     // that this task will wait between triggering timeouts to the actor.
     async fn follower_timer_task(
-        queue: flume::Receiver<Instant>,
+        next_wake_time: SharedOption<Instant>,
+        stop_check: stop_signal::StopCheck,
         actor_client: actor::ActorClient,
         mut clock: C,
         timeout_backoff: Duration,
     ) {
         loop {
-            match queue.try_recv() {
-                Ok(wake_time) => {
+            match next_wake_time.take() {
+                Some(wake_time) => {
                     // We've received a leader heartbeat, so we sleep until the next timeout.
                     clock.sleep_until(wake_time).await;
                 }
-                Err(flume::TryRecvError::Empty) => {
+                None => {
                     // We slept until `wake_time` and didn't receive another message. If the queue
                     // is still open, it means we haven't heard from the leader and we should start
                     // a new election. Keep this task running until Actor drops the queue. In case
                     // actor concurrently received an AppendEntries call and remains as Follower.
+                    if stop_check.should_stop() {
+                        return;
+                    }
                     actor_client.follower_timeout().await;
                     clock.sleep(timeout_backoff).await;
                 }
-                Err(flume::TryRecvError::Disconnected) => {
-                    // The timer handle has dropped, which means we are no longer a follower for the
-                    // same term. Exit the task without starting a new election.
-                    return;
-                }
+            }
+
+            // The timer handle has dropped, which means we are no longer a follower for the
+            // same term. Exit the task without starting a new election.
+            if stop_check.should_stop() {
+                return;
             }
         }
     }
@@ -220,6 +224,7 @@ impl<T> SharedOption<T> {
 }
 
 // TODO:1 move this into some base level crate and export mocks as a test-util feature flag.
+#[allow(dead_code)]
 mod time {
     use tokio::sync::watch;
     use tokio::time::{Duration, Instant};
@@ -369,7 +374,6 @@ mod time {
     }
 }
 
-#[allow(dead_code)] // keeping around as a reference
 mod stop_signal {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
