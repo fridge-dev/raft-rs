@@ -108,7 +108,7 @@ impl<C: Clock + Send + Sync + 'static> LeaderTimerHandle<C> {
 
 pub struct FollowerTimerHandle<C: Clock = RealClock> {
     // We use flume instead of tokio because we need non-blocking try_recv() and tokio's was removed in 1.0
-    // TODO:3 optimize to use `SharedOption` but would need to account for the 3 try_recv branches.
+    // TODO:3 optimize to use `SharedOption` to have better clobber-update behavior. Also need `StopSignal` to account for all 3 try_recv branches.
     wake_time_queue: flume::Sender<Instant>,
     timeout_range: RangeInclusive<Duration>,
     clock: C,
@@ -141,7 +141,7 @@ impl<C: Clock + Send + Sync + 'static> FollowerTimerHandle<C> {
         };
         handle.reset_timeout();
 
-        tokio::task::spawn(Self::follower_timer_task(rx, actor_client, clock));
+        tokio::task::spawn(Self::follower_timer_task(rx, actor_client, clock, min_timeout));
 
         handle
     }
@@ -163,7 +163,14 @@ impl<C: Clock + Send + Sync + 'static> FollowerTimerHandle<C> {
         self.clock.now() + rand_timeout
     }
 
-    async fn follower_timer_task(queue: flume::Receiver<Instant>, actor_client: actor::ActorClient, mut clock: C) {
+    // timeout_backoff is an impl detail (not from paper) which is just a static amount of time
+    // that this task will wait between triggering timeouts to the actor.
+    async fn follower_timer_task(
+        queue: flume::Receiver<Instant>,
+        actor_client: actor::ActorClient,
+        mut clock: C,
+        timeout_backoff: Duration,
+    ) {
         loop {
             match queue.try_recv() {
                 Ok(wake_time) => {
@@ -173,9 +180,10 @@ impl<C: Clock + Send + Sync + 'static> FollowerTimerHandle<C> {
                 Err(flume::TryRecvError::Empty) => {
                     // We slept until `wake_time` and didn't receive another message. If the queue
                     // is still open, it means we haven't heard from the leader and we should start
-                    // a new election.
+                    // a new election. Keep this task running until Actor drops the queue. In case
+                    // actor concurrently received an AppendEntries call and remains as Follower.
                     actor_client.follower_timeout().await;
-                    return;
+                    clock.sleep(timeout_backoff).await;
                 }
                 Err(flume::TryRecvError::Disconnected) => {
                     // The timer handle has dropped, which means we are no longer a follower for the
@@ -220,6 +228,11 @@ mod time {
     pub trait Clock: Clone {
         fn now(&self) -> Instant;
         async fn sleep_until(&mut self, deadline: Instant);
+
+        async fn sleep(&mut self, duration: Duration) {
+            let deadline = self.now() + duration;
+            self.sleep_until(deadline).await;
+        }
     }
 
     #[derive(Copy, Clone)]
@@ -413,13 +426,19 @@ mod tests {
         }
 
         pub async fn recv(&mut self) -> T {
-            self.rx.recv().await.expect("Expected value")
+            self.recv_with_sanity_timeout().await.expect("Expected value")
         }
 
         pub async fn recv_assert_empty_and_closed(&mut self) {
-            if let Some(_) = self.rx.recv().await {
+            if let Some(_) = self.recv_with_sanity_timeout().await {
                 panic!("Expected None");
             }
+        }
+
+        async fn recv_with_sanity_timeout(&mut self) -> Option<T> {
+            tokio::time::timeout(Duration::from_secs(5), self.rx.recv())
+                .await
+                .expect("Unexpected timeout")
         }
 
         pub async fn recv_assert_timeout(&mut self, timeout: Duration) {
@@ -619,10 +638,6 @@ mod tests {
         // timeout reset was at T=2.5.
         mock_clock_controller.advance(one_ns);
         actor.assert_follower_timeout_event().await;
-        actor.receiver.recv_assert_empty_and_closed().await;
-
-        // 5. Drop timer and validate no panics or anything.
-        drop(timer_handle);
     }
 
     #[tokio::test]
@@ -653,8 +668,6 @@ mod tests {
         actor.receiver.recv_assert_empty_and_closed().await;
     }
 
-    // TODO:1 refactor Follower timer task to fix this bug. Current thought: Change it to be an
-    //        async queue with a literal timeout on the receiver side lmao duh.
     /// TDD: Fixes bug of previous impl. That's why this test looks oddly specific and minimal.
     #[tokio::test]
     async fn follower_timer_handle_reset_timeout_after_timer_task_exit() {
@@ -688,6 +701,12 @@ mod tests {
         timer_handle.reset_timeout();
 
         // -- verify --
-        // Assert no panic!
+        // Implicit assertion: no panic
+        // Validate timer task is still running
+        for _ in 0..5 {
+            mock_clock_controller.advance(timeout / 2);
+            timer_handle.reset_timeout();
+        }
+        actor.assert_no_event().await;
     }
 }
