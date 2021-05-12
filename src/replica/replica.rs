@@ -6,7 +6,9 @@ use crate::grpc::{
     ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq,
 };
 use crate::replica::commit_log::{RaftLog, RaftLogEntry};
-use crate::replica::election::{CurrentLeader, ElectionConfig, ElectionState, PeerStateUpdate};
+use crate::replica::election::{
+    ElectionConfig, ElectionState, ElectionStateChangeListener, ElectionStateSnapshot, PeerStateUpdate,
+};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peer_client::RaftClient;
 use crate::replica::peers::{ClusterTracker, Peer, ReplicaId};
@@ -63,9 +65,9 @@ where
     L: Log<RaftLogEntry> + 'static,
     S: PersistentLocalState + 'static,
 {
-    pub fn new(config: ReplicaConfig<L, S>) -> Self {
+    pub fn new(config: ReplicaConfig<L, S>) -> (Self, ElectionStateChangeListener) {
         let my_replica_id = config.cluster_tracker.my_replica_id().clone();
-        let election_state = ElectionState::new_follower(
+        let (election_state, election_state_change_listener) = ElectionState::new_follower(
             ElectionConfig {
                 my_replica_id: my_replica_id.clone(),
                 leader_heartbeat_duration: config.leader_heartbeat_duration,
@@ -76,7 +78,7 @@ where
         );
         let commit_log = RaftLog::new(config.logger.clone(), config.commit_log, config.commit_stream_publisher);
 
-        Replica {
+        let replica = Replica {
             logger: config.logger,
             my_replica_id,
             cluster_tracker: config.cluster_tracker,
@@ -85,7 +87,9 @@ where
             commit_log,
             actor_client: config.actor_client,
             append_entries_timeout: config.append_entries_timeout,
-        }
+        };
+
+        (replica, election_state_change_listener)
     }
 
     pub fn handle_enqueue_for_replication(
@@ -93,9 +97,9 @@ where
         input: EnqueueForReplicationInput,
     ) -> Result<EnqueueForReplicationOutput, EnqueueForReplicationError> {
         // Leader check
-        match self.election_state.current_leader() {
-            CurrentLeader::Me => { /* carry on */ }
-            CurrentLeader::Other(leader_id) => match self.cluster_tracker.metadata(&leader_id) {
+        match self.election_state.current_state() {
+            ElectionStateSnapshot::Leader => { /* carry on */ }
+            ElectionStateSnapshot::Follower(leader_id) => match self.cluster_tracker.metadata(&leader_id) {
                 Some(leader) => {
                     return Err(EnqueueForReplicationError::LeaderRedirect {
                         leader_id,
@@ -109,7 +113,10 @@ where
                     return Err(EnqueueForReplicationError::NoLeader);
                 }
             },
-            CurrentLeader::Unknown => {
+            ElectionStateSnapshot::Candidate => {
+                return Err(EnqueueForReplicationError::NoLeader);
+            }
+            ElectionStateSnapshot::FollowerNoLeader => {
                 return Err(EnqueueForReplicationError::NoLeader);
             }
         }
@@ -421,6 +428,7 @@ where
             } => {
                 let index_of_last_new_entry = previous_log_entry_index.plus(input.new_entries.len() as u64);
                 let new_commit_index = cmp::min(commit_index, index_of_last_new_entry);
+                // TODO:1.5 there is a panic from here
                 self.commit_log.ratchet_fwd_commit_index(new_commit_index);
             }
             LeaderLogState::Empty | LeaderLogState::NoCommit { .. } => {

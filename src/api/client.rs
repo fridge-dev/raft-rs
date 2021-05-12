@@ -1,7 +1,7 @@
 use crate::actor::ActorClient;
 use crate::commitlog::Index;
 use crate::replica;
-use crate::replica::Term;
+use crate::replica::{ElectionStateChangeListener, Term};
 use bytes::Bytes;
 use std::io;
 use std::net::Ipv4Addr;
@@ -9,11 +9,15 @@ use std::net::Ipv4Addr;
 /// ReplicatedLog is the replicated log for external application to append to.
 pub struct ReplicatedLog {
     actor_client: ActorClient,
+    election_state_change_listener: ElectionStateChangeListener,
 }
 
 impl ReplicatedLog {
-    pub(crate) fn new(actor_client: ActorClient) -> Self {
-        ReplicatedLog { actor_client }
+    pub(crate) fn new(actor_client: ActorClient, election_state_change_listener: ElectionStateChangeListener) -> Self {
+        ReplicatedLog {
+            actor_client,
+            election_state_change_listener,
+        }
     }
 
     pub async fn start_replication(
@@ -44,6 +48,10 @@ impl ReplicatedLog {
                 replica::EnqueueForReplicationError::NoLeader => StartReplicationError::NoLeader,
                 replica::EnqueueForReplicationError::LocalIoError(e2) => StartReplicationError::LocalIoError(e2),
             })
+    }
+
+    pub fn election_state_change_listener(&self) -> ElectionStateChangeListener {
+        self.election_state_change_listener.clone()
     }
 }
 

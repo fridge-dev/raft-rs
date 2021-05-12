@@ -44,7 +44,7 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
 
     let options = RaftOptionsValidated::try_from(config.options)?;
 
-    let replica = Replica::new(ReplicaConfig {
+    let (replica, election_state_change_listener) = Replica::new(ReplicaConfig {
         logger: root_logger.clone(),
         cluster_tracker,
         commit_log,
@@ -64,7 +64,7 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     let replica_raft_server = RpcServer::new(root_logger.clone(), actor_client.clone());
     tokio::spawn(replica_raft_server.run(server_addr));
 
-    let replication_log = ReplicatedLog::new(actor_client);
+    let replication_log = ReplicatedLog::new(actor_client, election_state_change_listener);
 
     Ok(CreatedClient {
         replication_log,

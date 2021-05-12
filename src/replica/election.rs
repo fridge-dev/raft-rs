@@ -6,6 +6,7 @@ use crate::replica::Term;
 use std::collections::hash_map::Values;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use tokio::sync::watch;
 use tokio::time::Duration;
 
 #[derive(Clone)]
@@ -23,20 +24,30 @@ pub struct ElectionState {
     state: State,
     config: ElectionConfig,
     actor_client: actor::ActorClient,
+    state_change_notifier: ElectionStateChangeNotifier,
 }
 
 impl ElectionState {
     /// `new_follower()` creates a new ElectionState instance that starts out as a follower.
-    pub fn new_follower(config: ElectionConfig, actor_client: actor::ActorClient) -> Self {
-        ElectionState {
-            state: State::Follower(FollowerState::new(
-                config.follower_min_timeout,
-                config.follower_max_timeout,
-                actor_client.clone(),
-            )),
+    pub fn new_follower(
+        config: ElectionConfig,
+        actor_client: actor::ActorClient,
+    ) -> (Self, ElectionStateChangeListener) {
+        let initial_state = State::Follower(FollowerState::new(
+            config.follower_min_timeout,
+            config.follower_max_timeout,
+            actor_client.clone(),
+        ));
+        let (notifier, listener) = new_event_bus(Self::current_state_impl(&initial_state));
+
+        let election_state = ElectionState {
+            state: initial_state,
             config,
             actor_client,
-        }
+            state_change_notifier: notifier,
+        };
+
+        (election_state, listener)
     }
 
     pub fn transition_to_follower(&mut self, new_leader_id: Option<ReplicaId>) {
@@ -46,6 +57,7 @@ impl ElectionState {
             self.config.follower_max_timeout,
             self.actor_client.clone(),
         ));
+        self.notify_new_state();
     }
 
     pub fn transition_to_candidate_and_vote_for_self(&mut self) {
@@ -59,6 +71,7 @@ impl ElectionState {
         cs.add_received_vote(self.config.my_replica_id.clone());
 
         self.state = State::Candidate(cs);
+        self.notify_new_state();
     }
 
     pub fn transition_to_leader(
@@ -74,18 +87,28 @@ impl ElectionState {
             self.actor_client.clone(),
             term,
         ));
+        self.notify_new_state();
     }
 
-    pub fn current_leader(&self) -> CurrentLeader {
-        match &self.state {
-            State::Leader(_) => CurrentLeader::Me,
-            State::Candidate(_) => CurrentLeader::Unknown,
-            State::Follower(FollowerState { leader_id: None, .. }) => CurrentLeader::Unknown,
+    pub fn current_state(&self) -> ElectionStateSnapshot {
+        Self::current_state_impl(&self.state)
+    }
+
+    fn current_state_impl(state: &State) -> ElectionStateSnapshot {
+        match state {
+            State::Leader(_) => ElectionStateSnapshot::Leader,
+            State::Candidate(_) => ElectionStateSnapshot::Candidate,
+            State::Follower(FollowerState { leader_id: None, .. }) => ElectionStateSnapshot::FollowerNoLeader,
             State::Follower(FollowerState {
                 leader_id: Some(leader_id),
                 ..
-            }) => CurrentLeader::Other(leader_id.clone()),
+            }) => ElectionStateSnapshot::Follower(leader_id.clone()),
         }
+    }
+
+    fn notify_new_state(&self) {
+        self.state_change_notifier
+            .notify_new_state(Self::current_state_impl(&self.state));
     }
 
     pub fn reset_timeout_if_follower(&self) {
@@ -100,6 +123,7 @@ impl ElectionState {
                 fs.leader_id.replace(leader_id.clone());
             }
         }
+        self.notify_new_state();
     }
 
     /// Return number of votes received if candidate, or None if no longer Candidate.
@@ -134,11 +158,12 @@ impl fmt::Debug for ElectionState {
     }
 }
 
-#[derive(Eq, PartialEq)]
-pub enum CurrentLeader {
-    Me,
-    Other(ReplicaId),
-    Unknown,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ElectionStateSnapshot {
+    Leader,
+    Candidate,
+    Follower(ReplicaId),
+    FollowerNoLeader,
 }
 
 enum State {
@@ -237,6 +262,38 @@ impl FollowerState {
 
     pub fn reset_timeout(&self) {
         self.follower_timeout_tracker.reset_timeout();
+    }
+}
+
+// ------- Event bus -------
+
+fn new_event_bus(initial_state: ElectionStateSnapshot) -> (ElectionStateChangeNotifier, ElectionStateChangeListener) {
+    let (snd, rcv) = watch::channel(initial_state);
+
+    (ElectionStateChangeNotifier { snd }, ElectionStateChangeListener { rcv })
+}
+
+struct ElectionStateChangeNotifier {
+    snd: watch::Sender<ElectionStateSnapshot>,
+}
+
+impl ElectionStateChangeNotifier {
+    pub fn notify_new_state(&self, new_state: ElectionStateSnapshot) {
+        let _ = self.snd.send(new_state);
+    }
+}
+
+#[derive(Clone)]
+pub struct ElectionStateChangeListener {
+    rcv: watch::Receiver<ElectionStateSnapshot>,
+}
+
+impl ElectionStateChangeListener {
+    pub async fn next(&mut self) -> Option<ElectionStateSnapshot> {
+        match self.rcv.changed().await {
+            Ok(_) => Some(self.rcv.borrow().clone()),
+            Err(_) => None,
+        }
     }
 }
 

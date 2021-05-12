@@ -124,6 +124,8 @@ mod replica_api;
 mod timers;
 
 pub use commit_log::RaftLogEntry;
+pub use election::ElectionStateChangeListener;
+pub use election::ElectionStateSnapshot;
 pub use local_state::PersistentLocalState;
 pub use local_state::VolatileLocalState;
 pub use peers::ClusterTracker;
