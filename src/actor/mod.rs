@@ -88,9 +88,11 @@ impl ActorClient {
     ) -> Result<replica::EnqueueForReplicationOutput, replica::EnqueueForReplicationError> {
         let (tx, rx) = oneshot::channel();
         self.send_to_actor(Event::EnqueueForReplication(input, Callback(tx)))
-            .await;
+            .await
+            .expect("Raft replica event loop actor is dead. WTF!!");
 
         rx.await
+            // TODO:2 remove possibility of panic for clean replica termination
             .expect("Raft replica event loop actor dropped our channel. WTF!")
     }
 
@@ -99,14 +101,17 @@ impl ActorClient {
         input: replica::RequestVoteInput,
     ) -> Result<replica::RequestVoteOutput, replica::RequestVoteError> {
         let (tx, rx) = oneshot::channel();
-        self.send_to_actor(Event::RequestVote(input, Callback(tx))).await;
+        self.send_to_actor(Event::RequestVote(input, Callback(tx)))
+            .await
+            .map_err(|_| replica::RequestVoteError::ActorDead)?;
 
-        rx.await
-            .expect("Raft replica event loop actor dropped our channel. WTF!")
+        rx.await.map_err(|_| replica::RequestVoteError::ActorDead)?
     }
 
     pub async fn notify_request_vote_reply_from_peer(&self, reply: replica::RequestVoteReplyFromPeer) {
-        self.send_to_actor(Event::RequestVoteReplyFromPeer(reply)).await;
+        self.send_to_actor(Event::RequestVoteReplyFromPeer(reply))
+            .await
+            .expect("Raft replica event loop actor is dead. WTF!!");
     }
 
     pub async fn append_entries(
@@ -114,29 +119,33 @@ impl ActorClient {
         input: replica::AppendEntriesInput,
     ) -> Result<replica::AppendEntriesOutput, replica::AppendEntriesError> {
         let (tx, rx) = oneshot::channel();
-        self.send_to_actor(Event::AppendEntries(input, Callback(tx))).await;
+        self.send_to_actor(Event::AppendEntries(input, Callback(tx)))
+            .await
+            .map_err(|_| replica::AppendEntriesError::ActorDead)?;
 
-        rx.await
-            .expect("Raft replica event loop actor dropped our channel. WTF!")
+        rx.await.map_err(|_| replica::AppendEntriesError::ActorDead)?
     }
 
     pub async fn notify_append_entries_reply_from_peer(&self, reply: replica::AppendEntriesReplyFromPeer) {
-        self.send_to_actor(Event::AppendEntriesReplyFromPeer(reply)).await;
+        self.send_to_actor(Event::AppendEntriesReplyFromPeer(reply))
+            .await
+            .expect("Raft replica event loop actor is dead. WTF!!");
     }
 
     pub async fn leader_timer(&self, input: replica::LeaderTimerTick) {
-        self.send_to_actor(Event::LeaderTimer(input)).await;
+        self.send_to_actor(Event::LeaderTimer(input))
+            .await
+            .expect("Raft replica event loop actor is dead. WTF!!");
     }
 
     pub async fn follower_timeout(&self) {
-        self.send_to_actor(Event::FollowerTimeout).await;
-    }
-
-    async fn send_to_actor(&self, event: Event) {
-        self.sender
-            .send(event)
+        self.send_to_actor(Event::FollowerTimeout)
             .await
             .expect("Raft replica event loop actor is dead. WTF!!");
+    }
+
+    async fn send_to_actor(&self, event: Event) -> Result<(), ()> {
+        self.sender.send(event).await.map_err(|_| ())
     }
 }
 

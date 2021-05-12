@@ -52,6 +52,8 @@ pub enum RequestVoteError {
     CandidateNotInCluster,
     #[error("Requesting candidate's term is out of date")]
     RequestTermOutOfDate(TermOutOfDateInfo),
+    #[error("We (server) are unavailable because actor is dead RIP")]
+    ActorDead,
 }
 
 #[derive(Debug)]
@@ -120,6 +122,8 @@ pub enum AppendEntriesError {
     ServerMissingPreviousLogEntry,
     #[error("We (server) had an IO failure: {0:?}")]
     ServerIoError(io::Error),
+    #[error("We (server) are unavailable because actor is dead RIP")]
+    ActorDead,
 }
 
 #[derive(Debug)]

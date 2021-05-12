@@ -2,10 +2,10 @@ use crate::actor::ActorClient;
 use crate::commitlog::Index;
 use crate::grpc::grpc_raft_server::{GrpcRaft, GrpcRaftServer};
 use crate::grpc::{
-    proto_append_entries_error, proto_append_entries_result, proto_request_vote_result, ProtoAppendEntriesError,
-    ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoAppendEntriesSuccess, ProtoClientNotInCluster,
-    ProtoClientStaleTerm, ProtoRequestVoteReq, ProtoRequestVoteResult, ProtoRequestVoteSuccess, ProtoServerFault,
-    ProtoServerMissingPreviousLog,
+    proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
+    ProtoAppendEntriesError, ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoAppendEntriesSuccess,
+    ProtoClientNotInCluster, ProtoClientStaleTerm, ProtoRequestVoteError, ProtoRequestVoteReq, ProtoRequestVoteResult,
+    ProtoRequestVoteSuccess, ProtoServerFault, ProtoServerMissingPreviousLog,
 };
 use crate::replica::{
     AppendEntriesError, AppendEntriesInput, AppendEntriesLogEntry, AppendEntriesOutput, LeaderLogState, ReplicaId,
@@ -66,6 +66,13 @@ impl RpcServer {
             Err(RequestVoteError::RequestTermOutOfDate(_)) => ProtoRequestVoteResult {
                 result: Some(proto_request_vote_result::Result::Ok(ProtoRequestVoteSuccess {
                     vote_granted: false,
+                })),
+            },
+            Err(RequestVoteError::ActorDead) => ProtoRequestVoteResult {
+                result: Some(proto_request_vote_result::Result::Err(ProtoRequestVoteError {
+                    err: Some(proto_request_vote_error::Err::ServerFault(ProtoServerFault {
+                        message: "Server permanently unavailable".to_string(),
+                    })),
                 })),
             },
         }
@@ -174,6 +181,13 @@ impl RpcServer {
                 result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
                     err: Some(proto_append_entries_error::Err::ServerFault(ProtoServerFault {
                         message: "Local IO failure".to_string(),
+                    })),
+                })),
+            },
+            Err(AppendEntriesError::ActorDead) => ProtoAppendEntriesResult {
+                result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
+                    err: Some(proto_append_entries_error::Err::ServerFault(ProtoServerFault {
+                        message: "Server permanently unavailable".to_string(),
                     })),
                 })),
             },
