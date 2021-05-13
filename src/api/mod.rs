@@ -15,6 +15,7 @@ pub use commit_stream::CommittedEntry;
 pub use factory::create_raft_client;
 pub use factory::ClusterInfo;
 pub use factory::MemberInfo;
+pub use factory::RaftClient;
 pub use factory::RaftClientConfig;
 pub use options::RaftOptions;
 

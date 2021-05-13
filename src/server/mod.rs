@@ -71,7 +71,7 @@ impl RpcServer {
             Err(RequestVoteError::ActorDead) => ProtoRequestVoteResult {
                 result: Some(proto_request_vote_result::Result::Err(ProtoRequestVoteError {
                     err: Some(proto_request_vote_error::Err::ServerFault(ProtoServerFault {
-                        message: "Server permanently unavailable".to_string(),
+                        message: "Server internal task died".to_string(),
                     })),
                 })),
             },
@@ -187,7 +187,7 @@ impl RpcServer {
             Err(AppendEntriesError::ActorDead) => ProtoAppendEntriesResult {
                 result: Some(proto_append_entries_result::Result::Err(ProtoAppendEntriesError {
                     err: Some(proto_append_entries_error::Err::ServerFault(ProtoServerFault {
-                        message: "Server permanently unavailable".to_string(),
+                        message: "Server internal task died".to_string(),
                     })),
                 })),
             },
@@ -199,10 +199,11 @@ impl RpcServer {
 impl GrpcRaft for RpcServer {
     async fn request_vote(
         &self,
-        rpc_request: Request<ProtoRequestVoteReq>,
+        rpc_request_wrapped: Request<ProtoRequestVoteReq>,
     ) -> Result<Response<ProtoRequestVoteResult>, Status> {
+        let rpc_request = rpc_request_wrapped.into_inner();
         slog::debug!(self.logger, "ServerWire - {:?}", rpc_request);
-        let app_input = Self::convert_request_vote_input(rpc_request.into_inner())?;
+        let app_input = Self::convert_request_vote_input(rpc_request)?;
         let app_result = self.local_replica.request_vote(app_input).await;
         let rpc_reply = Self::convert_request_vote_result(app_result);
         slog::debug!(self.logger, "ServerWire - {:?}", rpc_reply);
@@ -211,10 +212,11 @@ impl GrpcRaft for RpcServer {
 
     async fn append_entries(
         &self,
-        rpc_request: Request<ProtoAppendEntriesReq>,
+        rpc_request_wrapped: Request<ProtoAppendEntriesReq>,
     ) -> Result<Response<ProtoAppendEntriesResult>, Status> {
+        let rpc_request = rpc_request_wrapped.into_inner();
         slog::debug!(self.logger, "ServerWire - {:?}", rpc_request);
-        let app_input = Self::convert_append_entries_input(rpc_request.into_inner())?;
+        let app_input = Self::convert_append_entries_input(rpc_request)?;
         let app_result = self.local_replica.append_entries(app_input).await;
         let rpc_reply = Self::convert_append_entries_result(app_result);
         slog::debug!(self.logger, "ServerWire - {:?}", rpc_reply);

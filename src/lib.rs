@@ -14,6 +14,7 @@ pub use api::CommittedEntry;
 pub use api::EntryKey;
 pub use api::MemberInfo;
 pub use api::MemberInfoBlob;
+pub use api::RaftClient;
 pub use api::RaftClientConfig;
 pub use api::RaftOptions;
 pub use api::ReplicatedLog;

@@ -4,17 +4,17 @@ use crate::api::{commit_stream, MemberInfoBlob};
 use crate::commitlog::InMemoryLog;
 use crate::replica::{ClusterTracker, Replica, ReplicaConfig, VolatileLocalState};
 use crate::server::RpcServer;
-use crate::{api, replica, CommitStream, RaftOptions, ReplicatedLog};
+use crate::{api, replica, CommitStream, ElectionStateChangeListener, RaftOptions, ReplicatedLog};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use tokio::sync::mpsc;
 
-// Name could be better
-pub struct CreatedClient {
+pub struct RaftClient {
     pub replication_log: ReplicatedLog,
     pub commit_stream: CommitStream,
+    pub election_state_change_listener: ElectionStateChangeListener,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -30,7 +30,7 @@ pub enum ClientCreationError {
     MeNotInCluster,
 }
 
-pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClient, ClientCreationError> {
+pub async fn create_raft_client(config: RaftClientConfig) -> Result<RaftClient, ClientCreationError> {
     let root_logger = config.info_logger;
 
     let commit_log = InMemoryLog::create(root_logger.clone()).map_err(|e| ClientCreationError::LogInitialization(e))?;
@@ -64,11 +64,12 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<CreatedClien
     let replica_raft_server = RpcServer::new(root_logger.clone(), actor_client.clone());
     tokio::spawn(replica_raft_server.run(server_addr));
 
-    let replication_log = ReplicatedLog::new(actor_client, election_state_change_listener);
+    let replication_log = ReplicatedLog::new(actor_client);
 
-    Ok(CreatedClient {
+    Ok(RaftClient {
         replication_log,
         commit_stream,
+        election_state_change_listener,
     })
 }
 

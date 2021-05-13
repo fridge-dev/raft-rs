@@ -41,6 +41,7 @@ impl CommitStream {
         self.receiver
             .recv()
             .await
+            // TODO:1 safely handle replica termination
             .expect("Replica event loop should never exit.")
     }
 }

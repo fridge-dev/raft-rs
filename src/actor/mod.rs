@@ -92,7 +92,7 @@ impl ActorClient {
             .expect("Raft replica event loop actor is dead. WTF!!");
 
         rx.await
-            // TODO:2 remove possibility of panic for clean replica termination
+            // TODO:1 remove possibility of panic for clean replica termination
             .expect("Raft replica event loop actor dropped our channel. WTF!")
     }
 
