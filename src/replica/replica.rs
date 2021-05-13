@@ -59,7 +59,6 @@ where
     append_entries_timeout: Duration,
 }
 
-// TODO:1.5 implement event bus so tests can track leadership changes.
 impl<L, S> Replica<L, S>
 where
     L: Log<RaftLogEntry> + 'static,
