@@ -1,104 +1,112 @@
-use crate::actor;
-use crate::replica;
-use crate::replica::timers::time::{Clock, RealClock};
-use rand::Rng;
-use std::ops::RangeInclusive;
-use std::sync::{Arc, Mutex, Weak};
-use tokio::time::{Duration, Instant};
+pub use follower::FollowerTimerHandle;
+pub use leader::LeaderTimerHandle;
 
-pub struct LeaderTimerHandle<C: Clock = RealClock> {
-    state: Arc<LeaderTimerHandleState<C>>,
-}
+mod leader {
+    use crate::replica::timers::shared_option::SharedOption;
+    use crate::replica::timers::time::{Clock, RealClock};
+    use crate::{actor, replica};
+    use std::sync::{Arc, Weak};
+    use tokio::time::{Duration, Instant};
 
-struct LeaderTimerHandleState<C: Clock> {
-    heartbeat_duration: Duration,
-    next_heartbeat_time: SharedOption<Instant>,
-    clock: C,
-}
-
-impl<C: Clock> LeaderTimerHandleState<C> {
-    pub fn reset_heartbeat_timer(&self) {
-        let new_timeout = self.clock.now() + self.heartbeat_duration;
-        self.next_heartbeat_time.replace(new_timeout);
+    pub struct LeaderTimerHandle<C: Clock = RealClock> {
+        shared: Arc<Shared<C>>,
     }
-}
 
-impl LeaderTimerHandle {
-    pub fn spawn_background_task(
+    struct Shared<C: Clock> {
         heartbeat_duration: Duration,
-        actor_client: actor::ActorClient,
-        peer_id: replica::ReplicaId,
-        term: replica::Term,
-    ) -> Self {
-        Self::spawn_background_task_with_clock(heartbeat_duration, actor_client, peer_id, term, RealClock)
-    }
-}
-
-impl<C: Clock + Send + Sync + 'static> LeaderTimerHandle<C> {
-    // For tests
-    fn spawn_background_task_with_clock(
-        heartbeat_duration: Duration,
-        actor_client: actor::ActorClient,
-        peer_id: replica::ReplicaId,
-        term: replica::Term,
+        next_heartbeat_time: SharedOption<Instant>,
         clock: C,
-    ) -> Self {
-        let shared_opt = SharedOption::new();
-        let handle = Arc::new(LeaderTimerHandleState {
-            heartbeat_duration,
-            next_heartbeat_time: shared_opt.clone(),
-            clock: clock.clone(),
-        });
-        let event = replica::LeaderTimerTick { peer_id, term };
-
-        tokio::task::spawn(Self::leader_timer_task(
-            Arc::downgrade(&handle),
-            shared_opt,
-            actor_client,
-            event,
-            clock,
-        ));
-
-        LeaderTimerHandle { state: handle }
     }
 
-    /// This updates the timestamp when we will next notify the actor to send AE to this peer.
-    pub fn reset_heartbeat_timer(&self) {
-        self.state.reset_heartbeat_timer();
-    }
-
-    async fn leader_timer_task(
-        weak_handle: Weak<LeaderTimerHandleState<C>>,
+    struct LeaderTimerTask<C: Clock> {
+        weak_shared: Weak<Shared<C>>,
         next_heartbeat_time: SharedOption<Instant>,
         actor_client: actor::ActorClient,
         event: replica::LeaderTimerTick,
-        mut clock: C,
-    ) {
-        // Notice: The first execution of the loop has an empty SharedOption, so the first iteration
-        // will result in immediately publishing the timer event. This is ideal, because we want to
-        // eagerly publish the  timer event to trigger leader to broadcast its heartbeat ASAP to the
-        // newly established leader-follower pair (e.g. newly elected leader, new cluster member).
-        loop {
-            match next_heartbeat_time.take() {
-                Some(wake_time) => {
-                    // We've sent a proactive heartbeat (due to new client request) to this peer,
-                    // so we don't need periodic heartbeat until the next heartbeat duration.
-                    clock.sleep_until(wake_time).await;
-                }
-                None => {
-                    // We slept until the previous `next_heartbeat_time` and there's no updated
-                    // `next_heartbeat_time`, which means we haven't sent a message to this peer
-                    // in a while.
+        clock: C,
+    }
 
-                    // Check if timer handle is still alive.
-                    if let Some(handle) = weak_handle.upgrade() {
-                        // Trigger a heartbeat. Reset heartbeat timer after the await.
-                        actor_client.leader_timer(event.clone()).await;
-                        handle.reset_heartbeat_timer();
-                    } else {
-                        // The timer handle has dropped, which means we are no longer a leader for
-                        // the same term. Exit the task.
-                        return;
+    impl LeaderTimerHandle {
+        pub fn spawn_background_task(
+            heartbeat_duration: Duration,
+            actor_client: actor::ActorClient,
+            peer_id: replica::ReplicaId,
+            term: replica::Term,
+        ) -> Self {
+            Self::spawn_background_task_with_clock(heartbeat_duration, actor_client, peer_id, term, RealClock)
+        }
+    }
+
+    impl<C: Clock + Send + Sync + 'static> LeaderTimerHandle<C> {
+        // For tests
+        pub(super) fn spawn_background_task_with_clock(
+            heartbeat_duration: Duration,
+            actor_client: actor::ActorClient,
+            peer_id: replica::ReplicaId,
+            term: replica::Term,
+            clock: C,
+        ) -> Self {
+            let shared_opt = SharedOption::new();
+            let shared = Arc::new(Shared {
+                heartbeat_duration,
+                next_heartbeat_time: shared_opt.clone(),
+                clock: clock.clone(),
+            });
+            let event = replica::LeaderTimerTick { peer_id, term };
+
+            let task = LeaderTimerTask {
+                weak_shared: Arc::downgrade(&shared),
+                next_heartbeat_time: shared_opt,
+                actor_client,
+                event,
+                clock,
+            };
+            tokio::task::spawn(task.run());
+
+            LeaderTimerHandle { shared }
+        }
+
+        /// This updates the timestamp when we will next notify the actor to send AE to this peer.
+        pub fn reset_heartbeat_timer(&self) {
+            self.shared.reset_heartbeat_timer();
+        }
+    }
+
+    impl<C: Clock> Shared<C> {
+        pub fn reset_heartbeat_timer(&self) {
+            let new_timeout = self.clock.now() + self.heartbeat_duration;
+            self.next_heartbeat_time.replace(new_timeout);
+        }
+    }
+
+    impl<C: Clock> LeaderTimerTask<C> {
+        pub async fn run(mut self) {
+            // Notice: The first execution of the loop has an empty SharedOption, so the first iteration
+            // will result in immediately publishing the timer event. This is ideal, because we want to
+            // eagerly publish the  timer event to trigger leader to broadcast its heartbeat ASAP to the
+            // newly established leader-follower pair (e.g. newly elected leader, new cluster member).
+            loop {
+                match self.next_heartbeat_time.take() {
+                    Some(wake_time) => {
+                        // We've sent a proactive heartbeat (due to new client request) to this peer,
+                        // so we don't need periodic heartbeat until the next heartbeat duration.
+                        self.clock.sleep_until(wake_time).await;
+                    }
+                    None => {
+                        // We slept until the previous `next_heartbeat_time` and there's no updated
+                        // `next_heartbeat_time`, which means we haven't sent a message to this peer
+                        // in a while.
+
+                        // Check if timer handle is still alive.
+                        if let Some(shared) = self.weak_shared.upgrade() {
+                            // Trigger a heartbeat. Reset heartbeat timer after the await.
+                            self.actor_client.leader_timer(self.event.clone()).await;
+                            shared.reset_heartbeat_timer();
+                        } else {
+                            // The timer handle has dropped, which means we are no longer a leader for
+                            // the same term. Exit the task.
+                            return;
+                        }
                     }
                 }
             }
@@ -106,125 +114,142 @@ impl<C: Clock + Send + Sync + 'static> LeaderTimerHandle<C> {
     }
 }
 
-pub struct FollowerTimerHandle<C: Clock = RealClock> {
-    next_wake_time: SharedOption<Instant>,
-    timeout_range: RangeInclusive<Duration>,
-    clock: C,
-    _to_drop: stop_signal::Stopper,
-}
+mod follower {
+    use crate::actor;
+    use crate::replica::timers::shared_option::SharedOption;
+    use crate::replica::timers::stop_signal;
+    use crate::replica::timers::time::{Clock, RealClock};
+    use rand::Rng;
+    use std::ops::RangeInclusive;
+    use tokio::time::{Duration, Instant};
 
-impl FollowerTimerHandle {
-    pub fn spawn_background_task(
-        min_timeout: Duration,
-        max_timeout: Duration,
-        actor_client: actor::ActorClient,
-    ) -> Self {
-        Self::spawn_background_task_with_clock(min_timeout, max_timeout, actor_client, RealClock)
+    pub struct FollowerTimerHandle<C: Clock = RealClock> {
+        next_wake_time: SharedOption<Instant>,
+        timeout_range: RangeInclusive<Duration>,
+        clock: C,
+        _to_drop: stop_signal::Stopper,
     }
-}
 
-impl<C: Clock + Send + Sync + 'static> FollowerTimerHandle<C> {
-    // For tests
-    fn spawn_background_task_with_clock(
-        min_timeout: Duration,
-        max_timeout: Duration,
+    struct FollowerTimerTask<C: Clock> {
+        next_wake_time: SharedOption<Instant>,
         actor_client: actor::ActorClient,
         clock: C,
-    ) -> Self {
-        let shared_opt = SharedOption::new();
-        let (stopper, stop_check) = stop_signal::new();
-
-        let handle = FollowerTimerHandle {
-            next_wake_time: shared_opt.clone(),
-            timeout_range: RangeInclusive::new(min_timeout, max_timeout),
-            clock: clock.clone(),
-            _to_drop: stopper,
-        };
-        handle.reset_timeout();
-
-        tokio::task::spawn(Self::follower_timer_task(
-            shared_opt,
-            stop_check,
-            actor_client,
-            clock,
-            min_timeout,
-        ));
-
-        handle
-    }
-
-    pub fn reset_timeout(&self) {
-        self.next_wake_time.replace(self.random_wake_time());
-    }
-
-    fn random_wake_time(&self) -> Instant {
-        let rand_timeout = rand::thread_rng().gen_range(self.timeout_range.clone());
-        self.clock.now() + rand_timeout
-    }
-
-    // timeout_backoff is an impl detail (not from paper) which is just a static amount of time
-    // that this task will wait between triggering timeouts to the actor.
-    async fn follower_timer_task(
-        next_wake_time: SharedOption<Instant>,
         stop_check: stop_signal::StopCheck,
-        actor_client: actor::ActorClient,
-        mut clock: C,
+        // timeout_backoff is an impl detail (not from paper) which is just a static amount of time
+        // that this task will wait between triggering timeouts to the actor.
         timeout_backoff: Duration,
-    ) {
-        loop {
-            match next_wake_time.take() {
-                Some(wake_time) => {
-                    // We've received a leader heartbeat, so we sleep until the next timeout.
-                    clock.sleep_until(wake_time).await;
-                }
-                None => {
-                    // We slept until `wake_time` and didn't receive another message. If the queue
-                    // is still open, it means we haven't heard from the leader and we should start
-                    // a new election. Keep this task running until Actor drops the queue. In case
-                    // actor concurrently received an AppendEntries call and remains as Follower.
-                    if stop_check.should_stop() {
-                        return;
+    }
+
+    impl FollowerTimerHandle {
+        pub fn spawn_background_task(
+            min_timeout: Duration,
+            max_timeout: Duration,
+            actor_client: actor::ActorClient,
+        ) -> Self {
+            Self::spawn_background_task_with_clock(min_timeout, max_timeout, actor_client, RealClock)
+        }
+    }
+
+    impl<C: Clock + Send + Sync + 'static> FollowerTimerHandle<C> {
+        // For tests
+        pub(super) fn spawn_background_task_with_clock(
+            min_timeout: Duration,
+            max_timeout: Duration,
+            actor_client: actor::ActorClient,
+            clock: C,
+        ) -> Self {
+            let shared_opt = SharedOption::new();
+            let (stopper, stop_check) = stop_signal::new();
+
+            let task = FollowerTimerTask {
+                next_wake_time: shared_opt.clone(),
+                actor_client,
+                clock: clock.clone(),
+                stop_check,
+                timeout_backoff: min_timeout,
+            };
+            let handle = FollowerTimerHandle {
+                next_wake_time: shared_opt,
+                timeout_range: RangeInclusive::new(min_timeout, max_timeout),
+                clock,
+                _to_drop: stopper,
+            };
+
+            handle.reset_timeout();
+            tokio::task::spawn(task.run());
+
+            handle
+        }
+
+        pub fn reset_timeout(&self) {
+            self.next_wake_time.replace(self.random_wake_time());
+        }
+
+        fn random_wake_time(&self) -> Instant {
+            let rand_timeout = rand::thread_rng().gen_range(self.timeout_range.clone());
+            self.clock.now() + rand_timeout
+        }
+    }
+
+    impl<C: Clock + Send + Sync + 'static> FollowerTimerTask<C> {
+        pub async fn run(mut self) {
+            loop {
+                match self.next_wake_time.take() {
+                    Some(wake_time) => {
+                        // We've received a leader heartbeat, so we sleep until the next timeout.
+                        self.clock.sleep_until(wake_time).await;
                     }
-                    actor_client.follower_timeout().await;
-                    clock.sleep(timeout_backoff).await;
+                    None => {
+                        // We slept until `wake_time` and didn't receive another message. If the queue
+                        // is still open, it means we haven't heard from the leader and we should start
+                        // a new election. Keep this task running until Actor drops the queue. In case
+                        // actor concurrently received an AppendEntries call and remains as Follower.
+                        if self.stop_check.should_stop() {
+                            return;
+                        }
+                        self.actor_client.follower_timeout().await;
+                        self.clock.sleep(self.timeout_backoff).await;
+                    }
+                }
+
+                // The timer handle has dropped, which means we are no longer a follower for the
+                // same term. Exit the task without starting a new election.
+                if self.stop_check.should_stop() {
+                    return;
                 }
             }
+        }
+    }
+}
 
-            // The timer handle has dropped, which means we are no longer a follower for the
-            // same term. Exit the task without starting a new election.
-            if stop_check.should_stop() {
-                return;
+mod shared_option {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    pub struct SharedOption<T> {
+        data: Arc<Mutex<Option<T>>>,
+    }
+
+    impl<T> SharedOption<T> {
+        pub fn new() -> Self {
+            SharedOption {
+                data: Arc::new(Mutex::new(None)),
             }
         }
-    }
-}
 
-#[derive(Clone, Default)]
-struct SharedOption<T> {
-    data: Arc<Mutex<Option<T>>>,
-}
+        pub fn replace(&self, new_data: T) {
+            self.data
+                .lock()
+                .expect("SharedOption.replace() mutex guard poison")
+                .replace(new_data);
+        }
 
-impl<T> SharedOption<T> {
-    pub fn new() -> Self {
-        SharedOption {
-            data: Arc::new(Mutex::new(None)),
+        pub fn take(&self) -> Option<T> {
+            self.data.lock().expect("SharedOption.take() mutex guard poison").take()
         }
     }
-
-    pub fn replace(&self, new_data: T) {
-        self.data
-            .lock()
-            .expect("SharedOption.replace() mutex guard poison")
-            .replace(new_data);
-    }
-
-    pub fn take(&self) -> Option<T> {
-        self.data.lock().expect("SharedOption.take() mutex guard poison").take()
-    }
 }
 
-// TODO:1 move this into some base level crate and export mocks as a test-util feature flag.
-#[allow(dead_code)]
 mod time {
     use tokio::sync::watch;
     use tokio::time::{Duration, Instant};
@@ -254,6 +279,8 @@ mod time {
         }
     }
 
+    // TODO:3 move this into some base level crate and export mocks as a test-util feature flag.
+    #[allow(dead_code)]
     pub fn mocked_clock() -> (MockClock, MockClockController) {
         let now = Instant::now();
         let (tx, rx) = watch::channel(now);
@@ -266,6 +293,7 @@ mod time {
         (sleeper, controller)
     }
 
+    #[allow(dead_code)]
     #[derive(Clone)]
     pub struct MockClock {
         current_time: watch::Receiver<Instant>,
@@ -288,11 +316,13 @@ mod time {
         }
     }
 
+    #[allow(dead_code)]
     pub struct MockClockController {
         current_time: watch::Sender<Instant>,
         time_of_instantiation: Instant,
     }
 
+    #[allow(dead_code)]
     impl MockClockController {
         pub fn current_time(&self) -> Instant {
             *self.current_time.borrow()
@@ -411,7 +441,7 @@ mod stop_signal {
 }
 
 #[cfg(test)]
-mod tests {
+mod integ_tests {
     use crate::actor::{ActorClient, Event};
     use crate::replica::timers::LeaderTimerHandle;
     use crate::replica::timers::{time, FollowerTimerHandle};
