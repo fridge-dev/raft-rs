@@ -128,12 +128,21 @@ where
             return Ok(());
         }
 
-        self.ratchet_fwd_commit_index(tentative_new_commit_index);
+        self.ratchet_fwd_commit_index_panicking(tentative_new_commit_index);
 
         Ok(())
     }
 
-    pub fn ratchet_fwd_commit_index(&mut self, new_commit_index: Index) {
+    pub fn ratchet_fwd_commit_index_if_changed(&mut self, new_commit_index: Index) {
+        // Gracefully handle unchanged. Panic (later) if index is decreasing.
+        if matches!(self.commit_index(), Some(ci) if ci == new_commit_index) {
+            return;
+        }
+
+        self.ratchet_fwd_commit_index_panicking(new_commit_index);
+    }
+
+    fn ratchet_fwd_commit_index_panicking(&mut self, new_commit_index: Index) {
         // Assert we only ratchet commit index forward.
         if let Some(current_commit_index) = self.commit_index {
             assert!(

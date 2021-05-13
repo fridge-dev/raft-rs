@@ -427,8 +427,7 @@ where
             } => {
                 let index_of_last_new_entry = previous_log_entry_index.plus(input.new_entries.len() as u64);
                 let new_commit_index = cmp::min(commit_index, index_of_last_new_entry);
-                // TODO:1.5 there is a panic from here
-                self.commit_log.ratchet_fwd_commit_index(new_commit_index);
+                self.commit_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
             }
             LeaderLogState::Empty | LeaderLogState::NoCommit { .. } => {
                 if let Some(my_commit_index) = self.commit_log.commit_index() {
