@@ -32,6 +32,9 @@ pub enum EnqueueForReplicationError {
 
     #[error("Failed to persist log")]
     LocalIoError(io::Error),
+
+    #[error("Replica actor is dead RIP")]
+    ActorDead,
 }
 
 #[derive(Debug)]

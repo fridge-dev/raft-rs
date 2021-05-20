@@ -100,7 +100,7 @@ mod leader {
                         // Check if timer handle is still alive.
                         if let Some(shared) = self.weak_shared.upgrade() {
                             // Trigger a heartbeat. Reset heartbeat timer after the await.
-                            self.actor_client.leader_timer(self.event.clone()).await;
+                            let _ = self.actor_client.leader_timer(self.event.clone()).await;
                             shared.reset_heartbeat_timer();
                         } else {
                             // The timer handle has dropped, which means we are no longer a leader for
@@ -207,7 +207,7 @@ mod follower {
                         if self.stop_check.should_stop() {
                             return;
                         }
-                        self.actor_client.follower_timeout().await;
+                        let _ = self.actor_client.follower_timeout().await;
                         self.clock.sleep(self.timeout_backoff).await;
                     }
                 }

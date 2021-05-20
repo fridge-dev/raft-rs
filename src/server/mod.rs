@@ -37,6 +37,7 @@ impl RpcServer {
             .serve(socket_addr)
             .await;
 
+        // TODO:1 make server exit when replica actor exits
         slog::warn!(logger, "Server run() has exited: {:?}", result);
     }
 

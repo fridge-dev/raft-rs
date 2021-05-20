@@ -31,19 +31,7 @@ impl ReplicatedLog {
                     entry_index: o.enqueued_index,
                 },
             })
-            .map_err(|e| match e {
-                replica::EnqueueForReplicationError::LeaderRedirect {
-                    leader_id,
-                    leader_ip,
-                    leader_blob,
-                } => StartReplicationError::LeaderRedirect {
-                    leader_id: leader_id.into_inner(),
-                    leader_ip,
-                    leader_blob: MemberInfoBlob::new(leader_blob.into_inner()),
-                },
-                replica::EnqueueForReplicationError::NoLeader => StartReplicationError::NoLeader,
-                replica::EnqueueForReplicationError::LocalIoError(e2) => StartReplicationError::LocalIoError(e2),
-            })
+            .map_err(|e| e.into())
     }
 }
 
@@ -81,6 +69,29 @@ pub enum StartReplicationError {
     // Might be unneeded, if Replica event loop doesn't sync write to disk.
     #[error("Failed to persist log")]
     LocalIoError(io::Error),
+
+    // Replica logic runs on a background task. This error is returned if the task has exited.
+    #[error("Replica task has exited")]
+    ReplicaExited,
+}
+
+impl From<replica::EnqueueForReplicationError> for StartReplicationError {
+    fn from(internal_error: replica::EnqueueForReplicationError) -> Self {
+        match internal_error {
+            replica::EnqueueForReplicationError::LeaderRedirect {
+                leader_id,
+                leader_ip,
+                leader_blob,
+            } => StartReplicationError::LeaderRedirect {
+                leader_id: leader_id.into_inner(),
+                leader_ip,
+                leader_blob: MemberInfoBlob::new(leader_blob.into_inner()),
+            },
+            replica::EnqueueForReplicationError::NoLeader => StartReplicationError::NoLeader,
+            replica::EnqueueForReplicationError::LocalIoError(e2) => StartReplicationError::LocalIoError(e2),
+            replica::EnqueueForReplicationError::ActorDead => StartReplicationError::ReplicaExited,
+        }
+    }
 }
 
 /// We allow application layer to provide an arbitrary blob of info about each member

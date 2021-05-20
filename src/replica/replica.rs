@@ -571,7 +571,7 @@ where
                         term: reply.descriptor.term,
                     };
                     tokio::task::spawn(async move {
-                        actor_client.leader_timer(peer_heartbeat).await;
+                        let _ = actor_client.leader_timer(peer_heartbeat).await;
                     });
                 }
             }
@@ -713,7 +713,7 @@ where
             result: Self::convert_append_entries_rpc_reply(rpc_reply),
         };
 
-        callback.notify_append_entries_reply_from_peer(callback_input).await;
+        let _ = callback.notify_append_entries_reply_from_peer(callback_input).await;
     }
 
     fn convert_append_entries_rpc_reply(
@@ -842,7 +842,7 @@ where
             result: callback_result,
         };
 
-        callback.notify_request_vote_reply_from_peer(callback_input).await;
+        let _ = callback.notify_request_vote_reply_from_peer(callback_input).await;
     }
 }
 

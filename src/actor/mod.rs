@@ -71,6 +71,10 @@ impl<O: Debug, E: Error> Callback<O, E> {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Actor has exited")]
+pub struct ActorExitedErr;
+
 #[derive(Clone)]
 pub struct ActorClient {
     // When to use try_send vs send? Do all calls have same criticality?
@@ -89,11 +93,9 @@ impl ActorClient {
         let (tx, rx) = oneshot::channel();
         self.send_to_actor(Event::EnqueueForReplication(input, Callback(tx)))
             .await
-            .expect("Raft replica event loop actor is dead. WTF!!");
+            .map_err(|_| replica::EnqueueForReplicationError::ActorDead)?;
 
-        rx.await
-            // TODO:1 remove possibility of panic for clean replica termination
-            .expect("Raft replica event loop actor dropped our channel. WTF!")
+        rx.await.map_err(|_| replica::EnqueueForReplicationError::ActorDead)?
     }
 
     pub async fn request_vote(
@@ -108,10 +110,11 @@ impl ActorClient {
         rx.await.map_err(|_| replica::RequestVoteError::ActorDead)?
     }
 
-    pub async fn notify_request_vote_reply_from_peer(&self, reply: replica::RequestVoteReplyFromPeer) {
-        self.send_to_actor(Event::RequestVoteReplyFromPeer(reply))
-            .await
-            .expect("Raft replica event loop actor is dead. WTF!!");
+    pub async fn notify_request_vote_reply_from_peer(
+        &self,
+        reply: replica::RequestVoteReplyFromPeer,
+    ) -> Result<(), ActorExitedErr> {
+        self.send_to_actor(Event::RequestVoteReplyFromPeer(reply)).await
     }
 
     pub async fn append_entries(
@@ -126,26 +129,23 @@ impl ActorClient {
         rx.await.map_err(|_| replica::AppendEntriesError::ActorDead)?
     }
 
-    pub async fn notify_append_entries_reply_from_peer(&self, reply: replica::AppendEntriesReplyFromPeer) {
-        self.send_to_actor(Event::AppendEntriesReplyFromPeer(reply))
-            .await
-            .expect("Raft replica event loop actor is dead. WTF!!");
+    pub async fn notify_append_entries_reply_from_peer(
+        &self,
+        reply: replica::AppendEntriesReplyFromPeer,
+    ) -> Result<(), ActorExitedErr> {
+        self.send_to_actor(Event::AppendEntriesReplyFromPeer(reply)).await
     }
 
-    pub async fn leader_timer(&self, input: replica::LeaderTimerTick) {
-        self.send_to_actor(Event::LeaderTimer(input))
-            .await
-            .expect("Raft replica event loop actor is dead. WTF!!");
+    pub async fn leader_timer(&self, input: replica::LeaderTimerTick) -> Result<(), ActorExitedErr> {
+        self.send_to_actor(Event::LeaderTimer(input)).await
     }
 
-    pub async fn follower_timeout(&self) {
-        self.send_to_actor(Event::FollowerTimeout)
-            .await
-            .expect("Raft replica event loop actor is dead. WTF!!");
+    pub async fn follower_timeout(&self) -> Result<(), ActorExitedErr> {
+        self.send_to_actor(Event::FollowerTimeout).await
     }
 
-    async fn send_to_actor(&self, event: Event) -> Result<(), ()> {
-        self.sender.send(event).await.map_err(|_| ())
+    async fn send_to_actor(&self, event: Event) -> Result<(), ActorExitedErr> {
+        self.sender.send(event).await.map_err(|_| ActorExitedErr)
     }
 }
 
