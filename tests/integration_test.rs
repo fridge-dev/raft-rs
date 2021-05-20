@@ -14,7 +14,9 @@ async fn leader_election_and_redirect() {
         num_members: 5,
         port_base: 3000,
         heartbeat_duration: Duration::from_millis(500),
-    }.create().await;
+    }
+    .create()
+    .await;
 
     let leader_id = cluster.converge_on_leader_id(Duration::from_secs(10)).await;
     let non_leader_id = cluster.non_leader_id(&leader_id);
@@ -32,7 +34,10 @@ async fn leader_election_and_redirect() {
             leader_id
         }
         Ok(ok) => {
-            panic!("Initially discovered leader {:?}, then non-leader {:?} returned with OK: {:?}", leader_id, non_leader_id, ok);
+            panic!(
+                "Initially discovered leader {:?}, then non-leader {:?} returned with OK: {:?}",
+                leader_id, non_leader_id, ok
+            );
         }
         Err(e) => {
             panic!("Failed to find leader: {:?}", e);
@@ -56,7 +61,9 @@ async fn simple_commit() {
         num_members: 5,
         port_base: 4000,
         heartbeat_duration,
-    }.create().await;
+    }
+    .create()
+    .await;
 
     // Wait for leader election
     let leader_id = cluster.discover_leader_id(Duration::from_secs(10)).await;
@@ -122,7 +129,12 @@ impl TestUtilClusterCreator {
         TestUtilCluster { clients }
     }
 
-    fn raft_config(id: usize, num_members: usize, port_base: u16, heartbeat_duration: Duration) -> raft::RaftClientConfig {
+    fn raft_config(
+        id: usize,
+        num_members: usize,
+        port_base: u16,
+        heartbeat_duration: Duration,
+    ) -> raft::RaftClientConfig {
         assert!(id < num_members, "ID must be in the range [0, {}]", num_members - 1);
 
         let mut cluster_members = Vec::with_capacity(num_members);
@@ -207,7 +219,12 @@ impl TestUtilCluster {
     }
 
     pub fn non_leader_id(&self, leader_id: &str) -> String {
-        let (non_leader_id, _) = self.clients.iter().filter(|(client_id, _)| leader_id != *client_id).next().unwrap();
+        let (non_leader_id, _) = self
+            .clients
+            .iter()
+            .filter(|(client_id, _)| leader_id != *client_id)
+            .next()
+            .unwrap();
         non_leader_id.clone()
     }
 

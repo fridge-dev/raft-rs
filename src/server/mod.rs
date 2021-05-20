@@ -8,8 +8,8 @@ use crate::grpc::{
     ProtoRequestVoteSuccess, ProtoServerFault, ProtoServerMissingPreviousLog,
 };
 use crate::replica::{
-    AppendEntriesError, AppendEntriesInput, AppendEntriesLogEntry, AppendEntriesOutput, LeaderLogState, ReplicaId,
-    RequestVoteError, RequestVoteInput, RequestVoteOutput, Term,
+    AppendEntriesError, AppendEntriesInput, AppendEntriesLogEntry, AppendEntriesOutput, ReplicaId, RequestVoteError,
+    RequestVoteInput, RequestVoteOutput, Term,
 };
 use bytes::Bytes;
 use std::net::SocketAddr;
@@ -40,10 +40,7 @@ impl RpcServer {
         slog::warn!(logger, "Server run() has exited: {:?}", result);
     }
 
-    async fn handle_request_vote(
-        &self,
-        rpc_request: ProtoRequestVoteReq,
-    ) -> Result<ProtoRequestVoteResult, Status> {
+    async fn handle_request_vote(&self, rpc_request: ProtoRequestVoteReq) -> Result<ProtoRequestVoteResult, Status> {
         let app_input = Self::convert_request_vote_input(rpc_request)?;
         let app_result = self.local_replica.request_vote(app_input).await;
         let rpc_reply = Self::convert_request_vote_result(app_result);
@@ -99,7 +96,12 @@ impl RpcServer {
     }
 
     fn convert_append_entries_input(rpc_request: ProtoAppendEntriesReq) -> Result<AppendEntriesInput, Status> {
-        let leader_log_state = RpcServer::convert_leader_log_state(&rpc_request)?;
+        let leader_previous_log_entry = Self::convert_log_entry_metadata(
+            rpc_request.previous_log_entry_term,
+            rpc_request.previous_log_entry_index,
+        )?;
+
+        let leader_commit_index = Self::convert_log_commit_index(rpc_request.commit_index);
 
         let mut new_entries = Vec::with_capacity(rpc_request.new_entries.len());
         for proto_entry in rpc_request.new_entries {
@@ -112,36 +114,10 @@ impl RpcServer {
         Ok(AppendEntriesInput {
             leader_term: Term::new(rpc_request.term),
             leader_id: ReplicaId::new(rpc_request.client_node_id),
-            leader_log_state,
+            leader_previous_log_entry,
+            leader_commit_index,
             new_entries,
         })
-    }
-
-    fn convert_leader_log_state(rpc_request: &ProtoAppendEntriesReq) -> Result<LeaderLogState, Status> {
-        let leader_previous_log_entry = Self::convert_log_entry_metadata(
-            rpc_request.previous_log_entry_term,
-            rpc_request.previous_log_entry_index,
-        )?;
-
-        match (leader_previous_log_entry, rpc_request.commit_index) {
-            (None, 0) => Ok(LeaderLogState::Empty),
-            (Some((previous_log_entry_term, previous_log_entry_index)), 0) => Ok(LeaderLogState::NoCommit {
-                previous_log_entry_term,
-                previous_log_entry_index,
-            }),
-            (Some((previous_log_entry_term, previous_log_entry_index)), commit_index) => Ok(LeaderLogState::Normal {
-                previous_log_entry_term,
-                previous_log_entry_index,
-                commit_index: Index::new(commit_index),
-            }),
-            (None, _) => Err(Status::invalid_argument(
-                // TODO:0 fix validation if AE req has non-0 new entries.
-                // Bug:
-                //      May 19 23:11:17.242 DEBG[src/replica/replica.rs:690:9] ClientWire - ProtoAppendEntriesReq { client_node_id: "replica-4", term: 1, commit_index: 1, previous_log_entry_term: 0, previous_log_entry_index: 0, new_entries: [ProtoLogEntry { term: 1, data: [72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100] }] }, ReplicaId: replica-4
-                //      May 19 23:11:17.245 DEBG[src/replica/replica.rs:692:9] ClientWire - Ok(Err(Status { code: InvalidArgument, message: "PreviousLogEntry data is 0 and commit index is non-0", metadata: MetadataMap { headers: {"content-type": "application/grpc", "date": "Thu, 20 May 2021 06:11:16 GMT"} } })), ReplicaId: replica-4
-                "PreviousLogEntry data is 0 and commit index is non-0",
-            )),
-        }
     }
 
     fn convert_log_entry_metadata(log_entry_term: u64, log_entry_index: u64) -> Result<Option<(Term, Index)>, Status> {
@@ -158,6 +134,13 @@ impl RpcServer {
                 ))
             }
             (term, index) => Ok(Some((Term::new(term), Index::new(index)))),
+        }
+    }
+
+    fn convert_log_commit_index(log_commit_index: u64) -> Option<Index> {
+        match log_commit_index {
+            0 => None,
+            index => Some(Index::new(index)),
         }
     }
 

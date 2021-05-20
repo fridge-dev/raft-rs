@@ -18,8 +18,7 @@ use crate::replica::replica_api::{
     RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
 };
 use crate::replica::{
-    AppendEntriesReplyFromPeerDescriptor, AppendEntriesReplyFromPeerError, LeaderLogState, LeaderTimerTick,
-    RequestVoteResult,
+    AppendEntriesReplyFromPeerDescriptor, AppendEntriesReplyFromPeerError, LeaderTimerTick, RequestVoteResult,
 };
 use std::collections::HashSet;
 use std::{cmp, io};
@@ -362,7 +361,7 @@ where
 
         // 2. Reply false if [my] log doesn't contain an entry at [leader's]
         // prevLogIndex whose term matches [leader's] prevLogTerm (§5.3)
-        if let Some((leader_prev_entry_term, leader_prev_entry_index)) = input.leader_log_state.previous_log_entry() {
+        if let Some((leader_prev_entry_term, leader_prev_entry_index)) = input.leader_previous_log_entry {
             match self.commit_log.read(leader_prev_entry_index) {
                 Ok(Some(my_previous_log_entry)) => {
                     if my_previous_log_entry.term != leader_prev_entry_term {
@@ -378,10 +377,11 @@ where
         // (same index but different terms), delete [my] existing entry and
         // all that follow it (§5.3)
         // 4. Append any new entries not already in the log
-        let mut next_entry_index = match input.leader_log_state.previous_log_entry() {
+        let mut next_entry_index = match &input.leader_previous_log_entry {
             None => Index::start_index(),
             Some((_, leader_prev_entry_index)) => leader_prev_entry_index.plus(1),
         };
+        let mut last_appended_index = next_entry_index.checked_minus(1);
         for new_entry in input.new_entries.iter() {
             // TODO:2 optimize read to not happen if we know we've truncated log in a previous iteration, or if we're missing an entry from a previous iteration.
             let opt_existing_entry = self
@@ -416,25 +416,42 @@ where
             );
 
             next_entry_index = next_entry_index.plus(1);
+            last_appended_index = Some(appended_index);
         }
 
+        let computed_last_appended_index = match (input.leader_previous_log_entry, input.new_entries.len() as u64) {
+            (None, 0) => None,
+            (None, n) => Some(Index::new(n)),
+            (Some((_, leader_prev_entry_index)), 0) => Some(leader_prev_entry_index),
+            (Some((_, leader_prev_entry_index)), n) => Some(leader_prev_entry_index.plus(n)),
+        };
+        debug_assert_eq!(last_appended_index, computed_last_appended_index);
+
         // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-        match input.leader_log_state {
-            LeaderLogState::Normal {
-                previous_log_entry_index,
-                commit_index,
-                ..
-            } => {
-                let index_of_last_new_entry = previous_log_entry_index.plus(input.new_entries.len() as u64);
-                let new_commit_index = cmp::min(commit_index, index_of_last_new_entry);
+        // TODO:1 Validate what "index of last new entry" means when new_entries is empty
+        match (input.leader_commit_index, self.commit_log.commit_index()) {
+            (None, None) => { /* Nothing to do */ }
+            (None, Some(my_commit_index)) => panic!(
+                "My commit index ({:?}) is non-0 but leader ({:?})'s commit index is 0. This should be impossible.",
+                my_commit_index, input.leader_id
+            ),
+            (Some(leader_commit_index), None) => {
+                let new_commit_index = match last_appended_index {
+                    Some(my_last_index) => cmp::min(leader_commit_index, my_last_index),
+                    None => leader_commit_index,
+                };
                 self.commit_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
             }
-            LeaderLogState::Empty | LeaderLogState::NoCommit { .. } => {
-                if let Some(my_commit_index) = self.commit_log.commit_index() {
-                    panic!("My commit index ({:?}) is non-0 but leader ({:?})'s commit index is 0. This should be impossible.", my_commit_index, input.leader_id);
+            (Some(leader_commit_index), Some(my_commit_index)) => {
+                if leader_commit_index > my_commit_index {
+                    let new_commit_index = match last_appended_index {
+                        Some(my_last_index) => cmp::min(leader_commit_index, my_last_index),
+                        None => leader_commit_index,
+                    };
+                    self.commit_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
                 }
             }
-        }
+        };
 
         let output = Ok(AppendEntriesOutput {});
 
@@ -1005,4 +1022,6 @@ mod tests {
         run(8, vec![6, 0, 8, 9]);
         run(7, vec![9, 8, 0, 0, 7]);
     }
+
+    // TODO:1 UT `server_handle_append_entries()`
 }
