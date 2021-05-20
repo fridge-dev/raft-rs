@@ -3,89 +3,77 @@ use chrono::Utc;
 use raft;
 use raft::ElectionStateSnapshot;
 use slog::Drain;
-use std::collections::HashMap;
-use std::error::Error;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::net::Ipv4Addr;
 use tokio::time::{Duration, Instant};
 
 #[tokio::test]
-async fn leader_election() -> Result<(), Box<dyn Error>> {
-    let heartbeat_duration = Duration::from_millis(500);
-    let num_members = 5;
-    let mut clients = HashMap::with_capacity(num_members);
-    for i in 0..num_members {
-        let client_config = config(i, 5, 3000, heartbeat_duration);
-        let client_id = client_config.cluster_info.my_replica_id.clone();
-        let client = raft::create_raft_client(client_config).await?;
-        clients.insert(client_id, client);
-    }
+async fn leader_election_and_redirect() {
+    let mut cluster = TestUtilClusterCreator {
+        num_members: 5,
+        port_base: 3000,
+        heartbeat_duration: Duration::from_millis(500),
+    }.create().await;
 
-    wait_for_leader_to_be_elected(&mut clients, Duration::from_secs(10)).await;
-
-    let (_, any_client) = clients.iter().next().unwrap();
+    let leader_id = cluster.converge_on_leader_id(Duration::from_secs(10)).await;
+    let non_leader_id = cluster.non_leader_id(&leader_id);
 
     // Try to find leader via redirect
-    let output = any_client
+    let output = cluster
+        .client(&non_leader_id)
         .replication_log
         .start_replication(raft::StartReplicationInput { data: Bytes::default() })
         .await;
 
-    let leader = match output {
-        Ok(ok) => {
-            println!("Omg, got lucky and found leader. Replied: {:?}", ok);
-            any_client
-        }
+    let redirected_to = match output {
         Err(raft::StartReplicationError::LeaderRedirect { leader_id, .. }) => {
             println!("Redirected to {:?}", leader_id);
-            clients.get(&leader_id).unwrap()
+            leader_id
+        }
+        Ok(ok) => {
+            panic!("Initially discovered leader {:?}, then non-leader {:?} returned with OK: {:?}", leader_id, non_leader_id, ok);
         }
         Err(e) => {
             panic!("Failed to find leader: {:?}", e);
         }
     };
+    assert_eq!(redirected_to, leader_id);
 
     // Confirm leader
-    let output = leader
+    cluster
+        .client(&leader_id)
         .replication_log
         .start_replication(raft::StartReplicationInput { data: Bytes::default() })
-        .await;
-    if let Err(raft::StartReplicationError::LeaderRedirect { .. }) = output {
-        panic!("wtf double redirect")
-    }
-
-    Ok(())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
-async fn simple_commit() -> Result<(), Box<dyn Error>> {
-    let num_members = 5;
+async fn simple_commit() {
     let heartbeat_duration = Duration::from_millis(500);
-    let mut clients = HashMap::with_capacity(num_members);
-    for i in 0..num_members {
-        let client_config = config(i, 5, 4000, heartbeat_duration);
-        let client_id = client_config.cluster_info.my_replica_id.clone();
-        let client = raft::create_raft_client(client_config).await?;
-        clients.insert(client_id, client);
-    }
+    let mut cluster = TestUtilClusterCreator {
+        num_members: 5,
+        port_base: 4000,
+        heartbeat_duration,
+    }.create().await;
 
     // Wait for leader election
-    let leader_id = discover_leader_id(&mut clients, Duration::from_secs(10)).await;
+    let leader_id = cluster.discover_leader_id(Duration::from_secs(10)).await;
 
     // Start repl of an entry
     let data_to_replicate = Bytes::from(String::from("Hello world"));
-    let output = clients
-        .get(&leader_id)
-        .expect("Leader missing!")
+    let output = cluster
+        .client(&leader_id)
         .replication_log
         .start_replication(raft::StartReplicationInput {
             data: data_to_replicate.clone(),
         })
         .await
-        .expect("Found incorrect leader");
+        .unwrap();
 
     // Assert that all clients observe that the entry becomes committed.
-    for (_, c) in clients.iter_mut() {
+    for (_, c) in cluster.clients.iter_mut() {
         let committed = c.commit_stream.next().await;
         assert_eq!(committed.key, output.key);
         assert_eq!(committed.data, data_to_replicate);
@@ -96,88 +84,136 @@ async fn simple_commit() -> Result<(), Box<dyn Error>> {
 
     // Repl a 2nd entry
     let data_to_replicate = Bytes::from(String::from("it's me"));
-    let output = clients
-        .get(&leader_id)
-        .expect("Leader missing!")
+    let output = cluster
+        .client(&leader_id)
         .replication_log
         .start_replication(raft::StartReplicationInput {
             data: data_to_replicate.clone(),
         })
         .await
-        .expect("Found incorrect leader");
+        .unwrap();
 
     // Assert that all clients observe that the entry becomes committed.
-    for (_, c) in clients.iter_mut() {
+    for (_, c) in cluster.clients.iter_mut() {
         let committed = c.commit_stream.next().await;
         assert_eq!(committed.key, output.key);
         assert_eq!(committed.data, data_to_replicate);
     }
-
-    Ok(())
 }
 
-fn config(id: usize, num_members: usize, port_base: u16, heartbeat_duration: Duration) -> raft::RaftClientConfig {
-    assert!(id < num_members, "ID must be in the range [0, {}]", num_members - 1);
+// Experimenting with new pattern of separating factory methods from instance methods
+// by using separate creator struct for creation.
+struct TestUtilClusterCreator {
+    pub num_members: usize,
+    pub port_base: u16,
+    pub heartbeat_duration: Duration,
+}
 
-    let mut cluster_members = Vec::with_capacity(num_members);
-    for i in 0..num_members {
-        cluster_members.push(member_info(port_base, i));
+impl TestUtilClusterCreator {
+    pub async fn create(self) -> TestUtilCluster {
+        let mut clients = HashMap::with_capacity(self.num_members);
+        for i in 0..self.num_members {
+            let client_config = Self::raft_config(i, self.num_members, self.port_base, self.heartbeat_duration);
+            let client_id = client_config.cluster_info.my_replica_id.clone();
+            let client = raft::create_raft_client(client_config).await.unwrap();
+            clients.insert(client_id, client);
+        }
+
+        TestUtilCluster { clients }
     }
 
-    let info_logger = create_root_logger_for_stdout(repl_id(id));
+    fn raft_config(id: usize, num_members: usize, port_base: u16, heartbeat_duration: Duration) -> raft::RaftClientConfig {
+        assert!(id < num_members, "ID must be in the range [0, {}]", num_members - 1);
 
-    raft::RaftClientConfig {
-        commit_log_directory: "/tmp/".to_string(),
-        info_logger,
-        cluster_info: raft::ClusterInfo {
-            my_replica_id: repl_id(id),
-            cluster_members,
-        },
-        options: raft::RaftOptions {
-            leader_heartbeat_duration: Some(heartbeat_duration),
-            follower_min_timeout: Some(heartbeat_duration * 3),
-            follower_max_timeout: Some(heartbeat_duration * 10),
-            ..raft::RaftOptions::default()
-        },
-    }
-}
+        let mut cluster_members = Vec::with_capacity(num_members);
+        for i in 0..num_members {
+            cluster_members.push(Self::member_info(port_base, i));
+        }
 
-fn member_info(port_base: u16, id: usize) -> raft::MemberInfo {
-    raft::MemberInfo {
-        replica_id: repl_id(id),
-        ip_addr: Ipv4Addr::from([127, 0, 0, 1]),
-        raft_rpc_port: port_base + id as u16,
-        peer_redirect_info_blob: raft::MemberInfoBlob::new(4000 + id as u128),
-    }
-}
+        let info_logger = create_root_logger_for_stdout(Self::repl_id(id));
 
-fn repl_id(id: usize) -> String {
-    format!("replica-{}", id + 1)
-}
-
-async fn discover_leader_id(clients: &mut HashMap<String, raft::RaftClient>, timeout: Duration) -> String {
-    let (any_client_id, any_client) = clients.iter_mut().next().unwrap();
-
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        let election_state = tokio::time::timeout_at(deadline, any_client.election_state_change_listener.next())
-            .await
-            .expect("Timeout waiting for leader election")
-            .expect("Expected election event bus to be alive");
-
-        match election_state {
-            ElectionStateSnapshot::Leader => return any_client_id.clone(),
-            // TODO:1 fix bad layer of abstraction, `ReplicaId`
-            ElectionStateSnapshot::Follower(leader_id) => return leader_id.into_inner(),
-            ElectionStateSnapshot::Candidate => { /* Continue */ }
-            ElectionStateSnapshot::FollowerNoLeader => { /* Continue */ }
+        raft::RaftClientConfig {
+            commit_log_directory: "/tmp/".to_string(),
+            info_logger,
+            cluster_info: raft::ClusterInfo {
+                my_replica_id: Self::repl_id(id),
+                cluster_members,
+            },
+            options: raft::RaftOptions {
+                leader_heartbeat_duration: Some(heartbeat_duration),
+                follower_min_timeout: Some(heartbeat_duration * 3),
+                follower_max_timeout: Some(heartbeat_duration * 10),
+                ..raft::RaftOptions::default()
+            },
         }
     }
+
+    fn member_info(port_base: u16, id: usize) -> raft::MemberInfo {
+        raft::MemberInfo {
+            replica_id: Self::repl_id(id),
+            ip_addr: Ipv4Addr::from([127, 0, 0, 1]),
+            raft_rpc_port: port_base + id as u16,
+            peer_redirect_info_blob: raft::MemberInfoBlob::new(9200 + id as u128),
+        }
+    }
+
+    fn repl_id(id: usize) -> String {
+        format!("replica-{}", id + 1)
+    }
 }
 
-async fn wait_for_leader_to_be_elected(clients: &mut HashMap<String, raft::RaftClient>, timeout: Duration) {
-    discover_leader_id(clients, timeout).await;
+struct TestUtilCluster {
+    clients: HashMap<String, raft::RaftClient>,
+}
+
+impl TestUtilCluster {
+    /// Wait for all clients to discover the same leader (but without Term validation)
+    /// TODO:2 add Term to election event bus
+    pub async fn converge_on_leader_id(&mut self, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+
+        let mut leader_ids = HashSet::new();
+        for (client_id, client) in self.clients.iter_mut() {
+            leader_ids.insert(Self::wait_for_leader_id(client, client_id, deadline).await);
+        }
+
+        assert_eq!(1, leader_ids.len(), "Found >1 leader: {:?}", leader_ids);
+        leader_ids.into_iter().next().unwrap()
+    }
+
+    /// Wait for any client to discover the leader
+    pub async fn discover_leader_id(&mut self, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        let (any_client_id, any_client) = self.clients.iter_mut().next().unwrap();
+
+        Self::wait_for_leader_id(any_client, any_client_id, deadline).await
+    }
+
+    async fn wait_for_leader_id(client: &mut raft::RaftClient, client_id: &str, deadline: Instant) -> String {
+        loop {
+            let election_state = tokio::time::timeout_at(deadline, client.election_state_change_listener.next())
+                .await
+                .expect("Timeout waiting for leader election")
+                .expect("Expected election event bus to be alive");
+
+            match election_state {
+                ElectionStateSnapshot::Leader => return client_id.to_string(),
+                // TODO:1 fix bad layer of abstraction, `ReplicaId`
+                ElectionStateSnapshot::Follower(leader_id) => return leader_id.into_inner(),
+                ElectionStateSnapshot::Candidate => { /* Continue */ }
+                ElectionStateSnapshot::FollowerNoLeader => { /* Continue */ }
+            }
+        }
+    }
+
+    pub fn non_leader_id(&self, leader_id: &str) -> String {
+        let (non_leader_id, _) = self.clients.iter().filter(|(client_id, _)| leader_id != *client_id).next().unwrap();
+        non_leader_id.clone()
+    }
+
+    pub fn client(&self, client_id: &str) -> &raft::RaftClient {
+        self.clients.get(client_id).unwrap()
+    }
 }
 
 #[allow(dead_code)]
