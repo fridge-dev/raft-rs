@@ -40,6 +40,16 @@ impl RpcServer {
         slog::warn!(logger, "Server run() has exited: {:?}", result);
     }
 
+    async fn handle_request_vote(
+        &self,
+        rpc_request: ProtoRequestVoteReq,
+    ) -> Result<ProtoRequestVoteResult, Status> {
+        let app_input = Self::convert_request_vote_input(rpc_request)?;
+        let app_result = self.local_replica.request_vote(app_input).await;
+        let rpc_reply = Self::convert_request_vote_result(app_result);
+        Ok(rpc_reply)
+    }
+
     fn convert_request_vote_input(rpc_request: ProtoRequestVoteReq) -> Result<RequestVoteInput, Status> {
         let candidate_last_log_entry =
             Self::convert_log_entry_metadata(rpc_request.last_log_entry_term, rpc_request.last_log_entry_index)?;
@@ -76,6 +86,16 @@ impl RpcServer {
                 })),
             },
         }
+    }
+
+    async fn handle_append_entries(
+        &self,
+        rpc_request: ProtoAppendEntriesReq,
+    ) -> Result<ProtoAppendEntriesResult, Status> {
+        let app_input = Self::convert_append_entries_input(rpc_request)?;
+        let app_result = self.local_replica.append_entries(app_input).await;
+        let rpc_reply = Self::convert_append_entries_result(app_result);
+        Ok(rpc_reply)
     }
 
     fn convert_append_entries_input(rpc_request: ProtoAppendEntriesReq) -> Result<AppendEntriesInput, Status> {
@@ -206,13 +226,12 @@ impl GrpcRaft for RpcServer {
         rpc_request_wrapped: Request<ProtoRequestVoteReq>,
     ) -> Result<Response<ProtoRequestVoteResult>, Status> {
         let rpc_request = rpc_request_wrapped.into_inner();
+
         slog::debug!(self.logger, "ServerWire - {:?}", rpc_request);
-        // TODO:0 log status if input validation failed
-        let app_input = Self::convert_request_vote_input(rpc_request)?;
-        let app_result = self.local_replica.request_vote(app_input).await;
-        let rpc_reply = Self::convert_request_vote_result(app_result);
-        slog::debug!(self.logger, "ServerWire - {:?}", rpc_reply);
-        Ok(Response::new(rpc_reply))
+        let rpc_result = self.handle_request_vote(rpc_request).await;
+        slog::debug!(self.logger, "ServerWire - {:?}", rpc_result);
+
+        rpc_result.map(Response::new)
     }
 
     async fn append_entries(
@@ -220,11 +239,11 @@ impl GrpcRaft for RpcServer {
         rpc_request_wrapped: Request<ProtoAppendEntriesReq>,
     ) -> Result<Response<ProtoAppendEntriesResult>, Status> {
         let rpc_request = rpc_request_wrapped.into_inner();
+
         slog::debug!(self.logger, "ServerWire - {:?}", rpc_request);
-        let app_input = Self::convert_append_entries_input(rpc_request)?;
-        let app_result = self.local_replica.append_entries(app_input).await;
-        let rpc_reply = Self::convert_append_entries_result(app_result);
-        slog::debug!(self.logger, "ServerWire - {:?}", rpc_reply);
-        Ok(Response::new(rpc_reply))
+        let rpc_result = self.handle_append_entries(rpc_request).await;
+        slog::debug!(self.logger, "ServerWire - {:?}", rpc_result);
+
+        rpc_result.map(Response::new)
     }
 }
