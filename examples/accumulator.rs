@@ -123,7 +123,7 @@ mod accumulator_impl {
             let start_repl_output = self.replicated_log.start_replication(start_repl_input).await?;
 
             // Phase 2 - wait for commit and validate
-            let committed_entry = self.commit_stream.next().await;
+            let committed_entry = self.commit_stream.next().await.unwrap();
             assert_eq!(start_repl_output.key, committed_entry.key);
             let (key, value) = decode_kv(committed_entry.data);
 

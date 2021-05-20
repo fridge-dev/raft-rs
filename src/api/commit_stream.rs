@@ -36,12 +36,12 @@ pub struct CommittedEntry {
 impl CommitStream {
     // TODO:3 How to handle when we accepted entry for repl, then lost leadership?
     //        Do we just *not* inform app layer?
-    /// next returns the next committed entry to be applied to your application's state machine.
-    pub async fn next(&mut self) -> CommittedEntry {
+    /// `next()` returns the next committed entry to be applied to your application's state machine.
+    /// It will return None when the commit stream has been terminally closed because the handle to
+    /// the local Replica has been dropped by your application.
+    pub async fn next(&mut self) -> Option<CommittedEntry> {
         self.receiver
             .recv()
             .await
-            // TODO:1 safely handle replica termination
-            .expect("Replica event loop should never exit.")
     }
 }

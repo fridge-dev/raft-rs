@@ -81,7 +81,7 @@ async fn simple_commit() {
 
     // Assert that all clients observe that the entry becomes committed.
     for (_, c) in cluster.clients.iter_mut() {
-        let committed = c.commit_stream.next().await;
+        let committed = c.commit_stream.next().await.unwrap();
         assert_eq!(committed.key, output.key);
         assert_eq!(committed.data, data_to_replicate);
     }
@@ -102,11 +102,13 @@ async fn simple_commit() {
 
     // Assert that all clients observe that the entry becomes committed.
     for (_, c) in cluster.clients.iter_mut() {
-        let committed = c.commit_stream.next().await;
+        let committed = c.commit_stream.next().await.unwrap();
         assert_eq!(committed.key, output.key);
         assert_eq!(committed.data, data_to_replicate);
     }
 }
+
+// TODO:1.5 add integ test for graceful shutdown
 
 // Experimenting with new pattern of separating factory methods from instance methods
 // by using separate creator struct for creation.
