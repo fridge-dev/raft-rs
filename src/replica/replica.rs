@@ -483,8 +483,8 @@ where
                         PeerStateUpdate::PeerLogBehind
                     }
                     Err(AppendEntriesReplyFromPeerError::RetryableFailure(err_msg)) => {
-                        slog::error!(logger, "AE failure: {:?}", err_msg);
-                        // Consider adding exponential backoff w jitter here.
+                        slog::error!(logger, "AE failure from remote peer: {:?}", err_msg);
+                        // TODO:2 Consider adding exponential backoff w jitter here.
                         PeerStateUpdate::OtherError
                     }
                     Ok(_) => {

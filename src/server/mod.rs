@@ -115,6 +115,10 @@ impl RpcServer {
                 commit_index: Index::new(commit_index),
             }),
             (None, _) => Err(Status::invalid_argument(
+                // TODO:0 fix validation if AE req has non-0 new entries.
+                // Bug:
+                //      May 19 23:11:17.242 DEBG[src/replica/replica.rs:690:9] ClientWire - ProtoAppendEntriesReq { client_node_id: "replica-4", term: 1, commit_index: 1, previous_log_entry_term: 0, previous_log_entry_index: 0, new_entries: [ProtoLogEntry { term: 1, data: [72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100] }] }, ReplicaId: replica-4
+                //      May 19 23:11:17.245 DEBG[src/replica/replica.rs:692:9] ClientWire - Ok(Err(Status { code: InvalidArgument, message: "PreviousLogEntry data is 0 and commit index is non-0", metadata: MetadataMap { headers: {"content-type": "application/grpc", "date": "Thu, 20 May 2021 06:11:16 GMT"} } })), ReplicaId: replica-4
                 "PreviousLogEntry data is 0 and commit index is non-0",
             )),
         }
@@ -203,6 +207,7 @@ impl GrpcRaft for RpcServer {
     ) -> Result<Response<ProtoRequestVoteResult>, Status> {
         let rpc_request = rpc_request_wrapped.into_inner();
         slog::debug!(self.logger, "ServerWire - {:?}", rpc_request);
+        // TODO:0 log status if input validation failed
         let app_input = Self::convert_request_vote_input(rpc_request)?;
         let app_result = self.local_replica.request_vote(app_input).await;
         let rpc_reply = Self::convert_request_vote_result(app_result);
