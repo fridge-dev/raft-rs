@@ -24,7 +24,6 @@ pub struct RpcServer {
 }
 
 impl RpcServer {
-    // TODO:0 use weak actor client
     pub fn new(logger: slog::Logger, local_replica: WeakActorClient) -> Self {
         RpcServer { logger, local_replica }
     }

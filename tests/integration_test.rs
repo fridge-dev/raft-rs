@@ -135,7 +135,6 @@ async fn graceful_shutdown() {
     drop(replication_log);
 
     // Assert termination and no panics
-    // TODO:1 Fix these, as currently they block forever.
     assert_election_event_bus_closed(Duration::from_secs(3), election_state_change_listener).await;
     assert_matches!(
         tokio::time::timeout(Duration::from_secs(3), commit_stream.next()).await,
