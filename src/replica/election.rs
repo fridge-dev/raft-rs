@@ -197,12 +197,8 @@ impl LeaderState {
         let mut peer_state = HashMap::with_capacity(peer_ids.len());
         for peer_id in peer_ids {
             // TODO:3 eagerly broadcast AE from this task for the initial round.
-            let leader_timer_handle = LeaderTimerHandle::spawn_timer_task(
-                heartbeat_duration,
-                actor_client.clone(),
-                peer_id.clone(),
-                term,
-            );
+            let leader_timer_handle =
+                LeaderTimerHandle::spawn_timer_task(heartbeat_duration, actor_client.clone(), peer_id.clone(), term);
             peer_state.insert(peer_id, PeerState::new(leader_timer_handle, previous_log_entry_index));
         }
 
@@ -216,11 +212,7 @@ impl CandidateState {
     pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::WeakActorClient) -> Self {
         CandidateState {
             received_votes_from: HashSet::with_capacity(3),
-            _follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(
-                min_timeout,
-                max_timeout,
-                actor_client,
-            ),
+            _follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(min_timeout, max_timeout, actor_client),
         }
     }
 
@@ -236,11 +228,7 @@ impl FollowerState {
     pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::WeakActorClient) -> Self {
         FollowerState {
             leader_id: None,
-            follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(
-                min_timeout,
-                max_timeout,
-                actor_client,
-            ),
+            follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(min_timeout, max_timeout, actor_client),
         }
     }
 
@@ -252,11 +240,7 @@ impl FollowerState {
     ) -> Self {
         FollowerState {
             leader_id,
-            follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(
-                min_timeout,
-                max_timeout,
-                actor_client,
-            ),
+            follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(min_timeout, max_timeout, actor_client),
         }
     }
 

@@ -104,7 +104,8 @@
 //! - AppendEntries(...)
 //! - RequestVote(...)
 //!
-//! Raft control plane ({raft_endpoint}) - used during raft deployment/cycling (infrequent). They ultimately delegate towards raft data plane.
+//! Raft control plane ({raft_endpoint}) - used during raft deployment/cycling (infrequent). They ultimately delegate
+//! towards raft data plane.
 //! - ObserveCluster(...) - for adding self to cluster
 //! - LeaveCluster(...) - for removing self from cluster
 //! - UpdateCluster(...) - for existing members to become aware of added/removed members
@@ -113,7 +114,6 @@
 //! - Get(key)
 //! - Put(key, value, options...)
 //! - Delete(key, options...)
-//!
 mod commit_log;
 mod election;
 mod local_state;

@@ -243,8 +243,7 @@ where
 /// Not needed:
 ///
 /// * Checksum is not needed, it's guaranteed by underlying commitlog.
-/// * Size/length of `Data` is not needed; the underlying commitlog will give us the correctly
-///   allocated array.
+/// * Size/length of `Data` is not needed; the underlying commitlog will give us the correctly allocated array.
 #[derive(Clone)]
 pub struct RaftLogEntry {
     pub term: Term,

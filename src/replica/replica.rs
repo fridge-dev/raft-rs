@@ -101,20 +101,22 @@ where
         // Leader check
         match self.election_state.current_state() {
             ElectionStateSnapshot::Leader => { /* carry on */ }
-            ElectionStateSnapshot::Follower(leader_id) => match self.cluster_tracker.metadata(&leader_id) {
-                Some(leader) => {
-                    return Err(EnqueueForReplicationError::LeaderRedirect {
-                        leader_id,
-                        leader_ip: leader.ip_addr(),
-                        leader_blob: leader.info_blob(),
-                    });
+            ElectionStateSnapshot::Follower(leader_id) => {
+                match self.cluster_tracker.metadata(&leader_id) {
+                    Some(leader) => {
+                        return Err(EnqueueForReplicationError::LeaderRedirect {
+                            leader_id,
+                            leader_ip: leader.ip_addr(),
+                            leader_blob: leader.info_blob(),
+                        });
+                    }
+                    None => {
+                        // This branch should technically be impossible.
+                        // TODO:2.5 We can code-ify that by changing FollowerState to have IpAddr as well.
+                        return Err(EnqueueForReplicationError::NoLeader);
+                    }
                 }
-                None => {
-                    // This branch should technically be impossible.
-                    // TODO:2.5 We can code-ify that by changing FollowerState to have IpAddr as well.
-                    return Err(EnqueueForReplicationError::NoLeader);
-                }
-            },
+            }
             ElectionStateSnapshot::Candidate => {
                 return Err(EnqueueForReplicationError::NoLeader);
             }

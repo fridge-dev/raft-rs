@@ -34,13 +34,7 @@ mod leader {
             term: replica::Term,
         ) -> Self {
             // Add minimal logic in this constructor, as it is untested.
-            let (task, handle) = LeaderTimerTask::new(
-                heartbeat_duration,
-                actor_client,
-                peer_id,
-                term,
-                RealClock,
-            );
+            let (task, handle) = LeaderTimerTask::new(heartbeat_duration, actor_client, peer_id, term, RealClock);
             tokio::task::spawn(task.run());
 
             handle
@@ -548,13 +542,8 @@ mod integ_tests {
         // -- execute & verify --
 
         // 1. Spawn task, assert there is one event in the queue.
-        let (timer_task, timer_handle) = LeaderTimerTask::new(
-            heartbeat_timeout,
-            actor_client,
-            peer_id,
-            term,
-            mock_clock,
-        );
+        let (timer_task, timer_handle) =
+            LeaderTimerTask::new(heartbeat_timeout, actor_client, peer_id, term, mock_clock);
         let task_join_handle = tokio::task::spawn(timer_task.run());
 
         actor
@@ -605,13 +594,8 @@ mod integ_tests {
         // -- execute & verify --
 
         // 1. Spawn task, assert there is one event in the queue.
-        let (timer_task, timer_handle) = LeaderTimerTask::new(
-            heartbeat_timeout,
-            actor_client,
-            peer_id,
-            term,
-            mock_clock,
-        );
+        let (timer_task, timer_handle) =
+            LeaderTimerTask::new(heartbeat_timeout, actor_client, peer_id, term, mock_clock);
         tokio::task::spawn(timer_task.run());
 
         actor
