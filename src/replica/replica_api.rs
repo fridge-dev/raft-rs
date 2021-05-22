@@ -34,7 +34,7 @@ pub enum EnqueueForReplicationError {
     LocalIoError(io::Error),
 
     #[error("Replica actor is dead RIP")]
-    ActorDead,
+    ActorExited,
 }
 
 #[derive(Debug)]
@@ -56,7 +56,7 @@ pub enum RequestVoteError {
     #[error("Requesting candidate's term is out of date")]
     RequestTermOutOfDate(TermOutOfDateInfo),
     #[error("We (server) are unavailable because actor is dead RIP")]
-    ActorDead,
+    ActorExited,
 }
 
 #[derive(Debug)]
@@ -93,7 +93,7 @@ pub enum AppendEntriesError {
     #[error("We (server) had an IO failure: {0:?}")]
     ServerIoError(io::Error),
     #[error("We (server) are unavailable because actor is dead RIP")]
-    ActorDead,
+    ActorExited,
 }
 
 #[derive(Debug)]

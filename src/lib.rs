@@ -1,3 +1,5 @@
+#![feature(ready_macro)]
+
 mod actor;
 mod api;
 mod commitlog;

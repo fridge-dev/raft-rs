@@ -89,7 +89,7 @@ impl From<replica::EnqueueForReplicationError> for StartReplicationError {
             },
             replica::EnqueueForReplicationError::NoLeader => StartReplicationError::NoLeader,
             replica::EnqueueForReplicationError::LocalIoError(e2) => StartReplicationError::LocalIoError(e2),
-            replica::EnqueueForReplicationError::ActorDead => StartReplicationError::ReplicaExited,
+            replica::EnqueueForReplicationError::ActorExited => StartReplicationError::ReplicaExited,
         }
     }
 }

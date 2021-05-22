@@ -1,4 +1,4 @@
-use crate::actor::ActorClient;
+use crate::actor::WeakActorClient;
 use crate::api;
 use crate::commitlog::{Index, Log};
 use crate::grpc::{
@@ -20,6 +20,7 @@ use crate::replica::replica_api::{
 use crate::replica::{
     AppendEntriesReplyFromPeerDescriptor, AppendEntriesReplyFromPeerError, LeaderTimerTick, RequestVoteResult,
 };
+use crate::server;
 use std::collections::HashSet;
 use std::{cmp, io};
 use tokio::time::error::Elapsed;
@@ -36,7 +37,8 @@ where
     pub commit_log: L,
     pub local_state: S,
     pub commit_stream_publisher: api::CommitStreamPublisher,
-    pub actor_client: ActorClient,
+    pub server_shutdown_handle: server::RpcServerShutdownHandle,
+    pub actor_client: WeakActorClient,
     pub leader_heartbeat_duration: Duration,
     pub follower_min_timeout: Duration,
     pub follower_max_timeout: Duration,
@@ -54,8 +56,9 @@ where
     local_state: S,
     election_state: ElectionState,
     commit_log: RaftLog<L>,
-    actor_client: ActorClient,
+    actor_client: WeakActorClient,
     append_entries_timeout: Duration,
+    _server_shutdown: server::RpcServerShutdownHandle,
 }
 
 impl<L, S> Replica<L, S>
@@ -85,6 +88,7 @@ where
             commit_log,
             actor_client: config.actor_client,
             append_entries_timeout: config.append_entries_timeout,
+            _server_shutdown: config.server_shutdown_handle,
         };
 
         (replica, election_state_change_listener)
@@ -701,7 +705,7 @@ where
         mut peer_client: RaftClient,
         rpc_request: ProtoAppendEntriesReq,
         rpc_timeout: Duration,
-        callback: ActorClient,
+        callback: WeakActorClient,
         descriptor: AppendEntriesReplyFromPeerDescriptor,
     ) {
         slog::debug!(logger, "ClientWire - {:?}", rpc_request);
@@ -805,7 +809,7 @@ where
         mut peer_client: RaftClient,
         peer_id: ReplicaId,
         rpc_request: ProtoRequestVoteReq,
-        callback: ActorClient,
+        callback: WeakActorClient,
         term: Term,
     ) {
         slog::debug!(logger, "ClientWire - {:?}", rpc_request);

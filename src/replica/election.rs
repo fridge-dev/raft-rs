@@ -23,7 +23,7 @@ pub struct ElectionConfig {
 pub struct ElectionState {
     state: State,
     config: ElectionConfig,
-    actor_client: actor::ActorClient,
+    actor_client: actor::WeakActorClient,
     state_change_notifier: ElectionStateChangeNotifier,
 }
 
@@ -31,7 +31,7 @@ impl ElectionState {
     /// `new_follower()` creates a new ElectionState instance that starts out as a follower.
     pub fn new_follower(
         config: ElectionConfig,
-        actor_client: actor::ActorClient,
+        actor_client: actor::WeakActorClient,
     ) -> (Self, ElectionStateChangeListener) {
         let initial_state = State::Follower(FollowerState::new(
             config.follower_min_timeout,
@@ -121,9 +121,9 @@ impl ElectionState {
         if let State::Follower(fs) = &mut self.state {
             if fs.leader_id.is_none() {
                 fs.leader_id.replace(leader_id.clone());
+                self.notify_new_state();
             }
         }
-        self.notify_new_state();
     }
 
     /// Return number of votes received if candidate, or None if no longer Candidate.
@@ -191,13 +191,13 @@ impl LeaderState {
         peer_ids: HashSet<ReplicaId>,
         previous_log_entry_index: Option<Index>,
         heartbeat_duration: Duration,
-        actor_client: actor::ActorClient,
+        actor_client: actor::WeakActorClient,
         term: Term,
     ) -> Self {
         let mut peer_state = HashMap::with_capacity(peer_ids.len());
         for peer_id in peer_ids {
             // TODO:3 eagerly broadcast AE from this task for the initial round.
-            let leader_timer_handle = LeaderTimerHandle::spawn_background_task(
+            let leader_timer_handle = LeaderTimerHandle::spawn_timer_task(
                 heartbeat_duration,
                 actor_client.clone(),
                 peer_id.clone(),
@@ -213,10 +213,10 @@ impl LeaderState {
 }
 
 impl CandidateState {
-    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::ActorClient) -> Self {
+    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::WeakActorClient) -> Self {
         CandidateState {
             received_votes_from: HashSet::with_capacity(3),
-            _follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
+            _follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(
                 min_timeout,
                 max_timeout,
                 actor_client,
@@ -233,10 +233,10 @@ impl CandidateState {
 }
 
 impl FollowerState {
-    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::ActorClient) -> Self {
+    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::WeakActorClient) -> Self {
         FollowerState {
             leader_id: None,
-            follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
+            follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(
                 min_timeout,
                 max_timeout,
                 actor_client,
@@ -248,11 +248,11 @@ impl FollowerState {
         leader_id: Option<ReplicaId>,
         min_timeout: Duration,
         max_timeout: Duration,
-        actor_client: actor::ActorClient,
+        actor_client: actor::WeakActorClient,
     ) -> Self {
         FollowerState {
             leader_id,
-            follower_timeout_tracker: FollowerTimerHandle::spawn_background_task(
+            follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(
                 min_timeout,
                 max_timeout,
                 actor_client,

@@ -3,6 +3,7 @@ use crate::replica;
 use std::error::Error;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
+use std::sync::{Arc, Weak};
 use tokio::sync::{mpsc, oneshot};
 
 // v1 Design choice: Disk interaction will be synchronous. Future improvement: There should be a
@@ -78,12 +79,29 @@ pub struct ActorExitedErr;
 #[derive(Clone)]
 pub struct ActorClient {
     // When to use try_send vs send? Do all calls have same criticality?
-    sender: mpsc::Sender<Event>,
+    sender: Arc<mpsc::Sender<Event>>,
+}
+
+#[derive(Clone)]
+pub struct WeakActorClient {
+    sender: Weak<mpsc::Sender<Event>>,
 }
 
 impl ActorClient {
-    pub fn new(sender: mpsc::Sender<Event>) -> Self {
-        ActorClient { sender }
+    // Never give access to raw Sender, as our graceful shutdown behavior relies on
+    // actor client clones dropping.
+    pub fn new(buffer_size: usize) -> (Self, mpsc::Receiver<Event>) {
+        let (tx, rx) = mpsc::channel(buffer_size);
+
+        let client = ActorClient { sender: Arc::new(tx) };
+
+        (client, rx)
+    }
+
+    pub fn weak(&self) -> WeakActorClient {
+        WeakActorClient {
+            sender: Arc::downgrade(&self.sender),
+        }
     }
 
     pub async fn enqueue_for_replication(
@@ -93,11 +111,17 @@ impl ActorClient {
         let (tx, rx) = oneshot::channel();
         self.send_to_actor(Event::EnqueueForReplication(input, Callback(tx)))
             .await
-            .map_err(|_| replica::EnqueueForReplicationError::ActorDead)?;
+            .map_err(|_| replica::EnqueueForReplicationError::ActorExited)?;
 
-        rx.await.map_err(|_| replica::EnqueueForReplicationError::ActorDead)?
+        rx.await.map_err(|_| replica::EnqueueForReplicationError::ActorExited)?
     }
 
+    async fn send_to_actor(&self, event: Event) -> Result<(), ActorExitedErr> {
+        self.sender.send(event).await.map_err(|_| ActorExitedErr)
+    }
+}
+
+impl WeakActorClient {
     pub async fn request_vote(
         &self,
         input: replica::RequestVoteInput,
@@ -105,9 +129,9 @@ impl ActorClient {
         let (tx, rx) = oneshot::channel();
         self.send_to_actor(Event::RequestVote(input, Callback(tx)))
             .await
-            .map_err(|_| replica::RequestVoteError::ActorDead)?;
+            .map_err(|_| replica::RequestVoteError::ActorExited)?;
 
-        rx.await.map_err(|_| replica::RequestVoteError::ActorDead)?
+        rx.await.map_err(|_| replica::RequestVoteError::ActorExited)?
     }
 
     pub async fn notify_request_vote_reply_from_peer(
@@ -124,9 +148,9 @@ impl ActorClient {
         let (tx, rx) = oneshot::channel();
         self.send_to_actor(Event::AppendEntries(input, Callback(tx)))
             .await
-            .map_err(|_| replica::AppendEntriesError::ActorDead)?;
+            .map_err(|_| replica::AppendEntriesError::ActorExited)?;
 
-        rx.await.map_err(|_| replica::AppendEntriesError::ActorDead)?
+        rx.await.map_err(|_| replica::AppendEntriesError::ActorExited)?
     }
 
     pub async fn notify_append_entries_reply_from_peer(
@@ -145,7 +169,10 @@ impl ActorClient {
     }
 
     async fn send_to_actor(&self, event: Event) -> Result<(), ActorExitedErr> {
-        self.sender.send(event).await.map_err(|_| ActorExitedErr)
+        match self.sender.upgrade() {
+            Some(sender) => sender.send(event).await.map_err(|_| ActorExitedErr),
+            None => Err(ActorExitedErr),
+        }
     }
 }
 

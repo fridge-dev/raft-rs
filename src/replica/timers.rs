@@ -18,34 +18,57 @@ mod leader {
         clock: C,
     }
 
-    struct LeaderTimerTask<C: Clock> {
+    pub struct LeaderTimerTask<C: Clock> {
         weak_shared: Weak<Shared<C>>,
         next_heartbeat_time: SharedOption<Instant>,
-        actor_client: actor::ActorClient,
+        actor_client: actor::WeakActorClient,
         event: replica::LeaderTimerTick,
         clock: C,
     }
 
     impl LeaderTimerHandle {
-        pub fn spawn_background_task(
+        pub fn spawn_timer_task(
             heartbeat_duration: Duration,
-            actor_client: actor::ActorClient,
+            actor_client: actor::WeakActorClient,
             peer_id: replica::ReplicaId,
             term: replica::Term,
         ) -> Self {
-            Self::spawn_background_task_with_clock(heartbeat_duration, actor_client, peer_id, term, RealClock)
+            // Add minimal logic in this constructor, as it is untested.
+            let (task, handle) = LeaderTimerTask::new(
+                heartbeat_duration,
+                actor_client,
+                peer_id,
+                term,
+                RealClock,
+            );
+            tokio::task::spawn(task.run());
+
+            handle
         }
     }
 
     impl<C: Clock + Send + Sync + 'static> LeaderTimerHandle<C> {
-        // For tests
-        pub(super) fn spawn_background_task_with_clock(
+        /// This updates the timestamp when we will next notify the actor to send AE to this peer.
+        pub fn reset_heartbeat_timer(&self) {
+            self.shared.reset_heartbeat_timer();
+        }
+    }
+
+    impl<C: Clock> Shared<C> {
+        pub fn reset_heartbeat_timer(&self) {
+            let new_timeout = self.clock.now() + self.heartbeat_duration;
+            self.next_heartbeat_time.replace(new_timeout);
+        }
+    }
+
+    impl<C: Clock> LeaderTimerTask<C> {
+        pub fn new(
             heartbeat_duration: Duration,
-            actor_client: actor::ActorClient,
+            actor_client: actor::WeakActorClient,
             peer_id: replica::ReplicaId,
             term: replica::Term,
             clock: C,
-        ) -> Self {
+        ) -> (Self, LeaderTimerHandle<C>) {
             let shared_opt = SharedOption::new();
             let shared = Arc::new(Shared {
                 heartbeat_duration,
@@ -61,25 +84,11 @@ mod leader {
                 event,
                 clock,
             };
-            tokio::task::spawn(task.run());
+            let handle = LeaderTimerHandle { shared };
 
-            LeaderTimerHandle { shared }
+            (task, handle)
         }
 
-        /// This updates the timestamp when we will next notify the actor to send AE to this peer.
-        pub fn reset_heartbeat_timer(&self) {
-            self.shared.reset_heartbeat_timer();
-        }
-    }
-
-    impl<C: Clock> Shared<C> {
-        pub fn reset_heartbeat_timer(&self) {
-            let new_timeout = self.clock.now() + self.heartbeat_duration;
-            self.next_heartbeat_time.replace(new_timeout);
-        }
-    }
-
-    impl<C: Clock> LeaderTimerTask<C> {
         pub async fn run(mut self) {
             // Notice: The first execution of the loop has an empty SharedOption, so the first iteration
             // will result in immediately publishing the timer event. This is ideal, because we want to
@@ -130,9 +139,9 @@ mod follower {
         _to_drop: stop_signal::Stopper,
     }
 
-    struct FollowerTimerTask<C: Clock> {
+    pub struct FollowerTimerTask<C: Clock> {
         next_wake_time: SharedOption<Instant>,
-        actor_client: actor::ActorClient,
+        actor_client: actor::WeakActorClient,
         clock: C,
         stop_check: stop_signal::StopCheck,
         // timeout_backoff is an impl detail (not from paper) which is just a static amount of time
@@ -141,23 +150,36 @@ mod follower {
     }
 
     impl FollowerTimerHandle {
-        pub fn spawn_background_task(
+        pub fn spawn_timer_task(
             min_timeout: Duration,
             max_timeout: Duration,
-            actor_client: actor::ActorClient,
+            actor_client: actor::WeakActorClient,
         ) -> Self {
-            Self::spawn_background_task_with_clock(min_timeout, max_timeout, actor_client, RealClock)
+            let (task, handle) = FollowerTimerTask::new(min_timeout, max_timeout, actor_client, RealClock);
+            tokio::task::spawn(task.run());
+
+            handle
         }
     }
 
     impl<C: Clock + Send + Sync + 'static> FollowerTimerHandle<C> {
-        // For tests
-        pub(super) fn spawn_background_task_with_clock(
+        pub fn reset_timeout(&self) {
+            self.next_wake_time.replace(self.random_wake_time());
+        }
+
+        fn random_wake_time(&self) -> Instant {
+            let rand_timeout = rand::thread_rng().gen_range(self.timeout_range.clone());
+            self.clock.now() + rand_timeout
+        }
+    }
+
+    impl<C: Clock + Send + Sync + 'static> FollowerTimerTask<C> {
+        pub fn new(
             min_timeout: Duration,
             max_timeout: Duration,
-            actor_client: actor::ActorClient,
+            actor_client: actor::WeakActorClient,
             clock: C,
-        ) -> Self {
+        ) -> (Self, FollowerTimerHandle<C>) {
             let shared_opt = SharedOption::new();
             let (stopper, stop_check) = stop_signal::new();
 
@@ -175,23 +197,13 @@ mod follower {
                 _to_drop: stopper,
             };
 
+            // Timer task must have a timeout value present when it starts, otherwise it may
+            // trigger a timeout immediately after we become a follower.
             handle.reset_timeout();
-            tokio::task::spawn(task.run());
 
-            handle
+            (task, handle)
         }
 
-        pub fn reset_timeout(&self) {
-            self.next_wake_time.replace(self.random_wake_time());
-        }
-
-        fn random_wake_time(&self) -> Instant {
-            let rand_timeout = rand::thread_rng().gen_range(self.timeout_range.clone());
-            self.clock.now() + rand_timeout
-        }
-    }
-
-    impl<C: Clock + Send + Sync + 'static> FollowerTimerTask<C> {
         pub async fn run(mut self) {
             loop {
                 match self.next_wake_time.take() {
@@ -443,8 +455,7 @@ mod stop_signal {
 #[cfg(test)]
 mod integ_tests {
     use crate::actor::{ActorClient, Event};
-    use crate::replica::timers::LeaderTimerHandle;
-    use crate::replica::timers::{time, FollowerTimerHandle};
+    use crate::replica::timers::{follower::FollowerTimerTask, leader::LeaderTimerTask, time};
     use crate::replica::{LeaderTimerTick, ReplicaId, Term};
     use std::fmt::Debug;
     use tokio::sync::mpsc;
@@ -463,6 +474,7 @@ mod integ_tests {
             self.recv_with_sanity_timeout().await.expect("Expected value")
         }
 
+        #[allow(dead_code)]
         pub async fn recv_assert_empty_and_closed(&mut self) {
             if let Some(_) = self.recv_with_sanity_timeout().await {
                 panic!("Expected None");
@@ -520,8 +532,8 @@ mod integ_tests {
     async fn leader_timer_handle_lifecycle() {
         // -- setup --
         let heartbeat_timeout = Duration::from_millis(100);
-        let (tx, rx) = mpsc::channel(10);
-        let actor_client = ActorClient::new(tx);
+        let (strong_actor_client, rx) = ActorClient::new(10);
+        let actor_client = strong_actor_client.weak();
         let mut actor = TestUtilActor::new(rx);
 
         let peer_id = ReplicaId::new("peer-123");
@@ -536,13 +548,14 @@ mod integ_tests {
         // -- execute & verify --
 
         // 1. Spawn task, assert there is one event in the queue.
-        let timer_handle = LeaderTimerHandle::spawn_background_task_with_clock(
+        let (timer_task, timer_handle) = LeaderTimerTask::new(
             heartbeat_timeout,
             actor_client,
             peer_id,
             term,
             mock_clock,
         );
+        let task_join_handle = tokio::task::spawn(timer_task.run());
 
         actor
             .assert_leader_heartbeat_event(expected_heartbeat_event.clone())
@@ -565,18 +578,19 @@ mod integ_tests {
             .await;
         actor.assert_no_event().await;
 
-        // 4. Drop handle and assert closed
+        // 4. Drop handle and assert timer task exited without sending more events.
         drop(timer_handle);
         mock_clock_controller.advance(heartbeat_timeout);
-        actor.receiver.recv_assert_empty_and_closed().await;
+        task_join_handle.await.unwrap();
+        actor.assert_no_event().await;
     }
 
     #[tokio::test]
     async fn leader_timer_handle_resetting_timeout() {
         // -- setup --
         let heartbeat_timeout = Duration::from_millis(100);
-        let (tx, rx) = mpsc::channel(10);
-        let actor_client = ActorClient::new(tx);
+        let (strong_actor_client, rx) = ActorClient::new(10);
+        let actor_client = strong_actor_client.weak();
         let mut actor = TestUtilActor::new(rx);
 
         let peer_id = ReplicaId::new("peer-123");
@@ -591,13 +605,14 @@ mod integ_tests {
         // -- execute & verify --
 
         // 1. Spawn task, assert there is one event in the queue.
-        let timer_handle = LeaderTimerHandle::spawn_background_task_with_clock(
+        let (timer_task, timer_handle) = LeaderTimerTask::new(
             heartbeat_timeout,
             actor_client,
             peer_id,
             term,
             mock_clock,
         );
+        tokio::task::spawn(timer_task.run());
 
         actor
             .assert_leader_heartbeat_event(expected_heartbeat_event.clone())
@@ -634,8 +649,8 @@ mod integ_tests {
     async fn follower_timer_handle_reset_and_timeout() {
         // -- setup --
         let timeout = Duration::from_millis(100);
-        let (tx, rx) = mpsc::channel(10);
-        let actor_client = ActorClient::new(tx);
+        let (strong_actor_client, rx) = ActorClient::new(10);
+        let actor_client = strong_actor_client.weak();
         let mut actor = TestUtilActor::new(rx);
 
         let (mock_clock, mut mock_clock_controller) = time::mocked_clock();
@@ -643,13 +658,14 @@ mod integ_tests {
         // -- execute & verify --
 
         // 1. Spawn task, assert there is no event in the queue.
-        let timer_handle = FollowerTimerHandle::spawn_background_task_with_clock(
+        let (timer_task, timer_handle) = FollowerTimerTask::new(
             // We are not testing randomness/jitter, so make min/max the same.
             /* min */ timeout,
             /* max */ timeout,
             actor_client,
             mock_clock,
         );
+        tokio::task::spawn(timer_task.run());
 
         actor.assert_no_event().await;
 
@@ -678,28 +694,30 @@ mod integ_tests {
     async fn follower_timer_handle_drop() {
         // -- setup --
         let timeout = Duration::from_millis(100);
-        let (tx, rx) = mpsc::channel(10);
-        let actor_client = ActorClient::new(tx);
+        let (strong_actor_client, rx) = ActorClient::new(10);
+        let actor_client = strong_actor_client.weak();
         let mut actor = TestUtilActor::new(rx);
 
         let (mock_clock, mut mock_clock_controller) = time::mocked_clock();
 
         // -- execute --
         // Spawn task, it will be sleeping. Drop handle to observe behavior.
-        let timer_handle = FollowerTimerHandle::spawn_background_task_with_clock(
+        let (timer_task, timer_handle) = FollowerTimerTask::new(
             // We are not testing randomness/jitter, so make min/max the same.
             /* min */ timeout,
             /* max */ timeout,
             actor_client,
             mock_clock,
         );
+        let task_join_handle = tokio::task::spawn(timer_task.run());
         drop(timer_handle);
 
         // -- verify --
         // Fast-fwd time to ensure timer task would've fired an event, and then assert timer task
         // has exited.
         mock_clock_controller.advance(timeout * 2);
-        actor.receiver.recv_assert_empty_and_closed().await;
+        task_join_handle.await.unwrap();
+        actor.assert_no_event().await;
     }
 
     /// TDD: Fixes bug of previous impl. That's why this test looks oddly specific and minimal.
@@ -707,20 +725,21 @@ mod integ_tests {
     async fn follower_timer_handle_reset_timeout_after_timer_task_exit() {
         // -- setup --
         let timeout = Duration::from_millis(100);
-        let (tx, rx) = mpsc::channel(10);
-        let actor_client = ActorClient::new(tx);
+        let (strong_actor_client, rx) = ActorClient::new(10);
+        let actor_client = strong_actor_client.weak();
         let mut actor = TestUtilActor::new(rx);
 
         let (mock_clock, mut mock_clock_controller) = time::mocked_clock();
 
         // Spawn task, assert there is no event in the queue.
-        let timer_handle = FollowerTimerHandle::spawn_background_task_with_clock(
+        let (timer_task, timer_handle) = FollowerTimerTask::new(
             // We are not testing randomness/jitter, so make min/max the same.
             /* min */ timeout,
             /* max */ timeout,
             actor_client,
             mock_clock,
         );
+        tokio::task::spawn(timer_task.run());
         actor.assert_no_event().await;
 
         // -- execute --

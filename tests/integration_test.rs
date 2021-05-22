@@ -1,3 +1,5 @@
+#![feature(assert_matches)]
+
 use bytes::Bytes;
 use chrono::Utc;
 use raft;
@@ -108,7 +110,56 @@ async fn simple_commit() {
     }
 }
 
-// TODO:1.5 add integ test for graceful shutdown
+#[tokio::test]
+async fn graceful_shutdown() {
+    let mut cluster = TestUtilClusterCreator {
+        num_members: 5,
+        port_base: 5000,
+        heartbeat_duration: Duration::from_millis(500),
+    }
+    .create()
+    .await;
+
+    // Wait for leader election
+    let leader_id = cluster.discover_leader_id(Duration::from_secs(10)).await;
+
+    // Get non-leader
+    let non_leader_id = cluster.non_leader_id(&leader_id);
+    let non_leader_client = cluster.remove(&non_leader_id);
+    let (replication_log, mut commit_stream, election_state_change_listener) = non_leader_client.destruct();
+
+    // Kill replica actor. It is a local decision, so imagine other replicas can't know. The proper
+    // way would be to leave the cluster, then kill the replica actor, but we haven't implemented
+    // leave cluster operation.
+    println!("Dropping {}", non_leader_id);
+    drop(replication_log);
+
+    // Assert termination and no panics
+    // TODO:1 Fix these, as currently they block forever.
+    assert_election_event_bus_closed(Duration::from_secs(3), election_state_change_listener).await;
+    assert_matches!(
+        tokio::time::timeout(Duration::from_secs(3), commit_stream.next()).await,
+        Ok(None),
+        "commit_stream did not exit correctly"
+    );
+    // TODO:2 assert that host is not listening on port anymore.
+}
+
+async fn assert_election_event_bus_closed(
+    timeout: Duration,
+    mut election_state_change_listener: raft::ElectionStateChangeListener,
+) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let state = tokio::time::timeout_at(deadline, election_state_change_listener.next())
+            .await
+            .expect("Timed out waiting for election event bus next()");
+        match state {
+            Some(s) => println!("Received {:?}", s),
+            None => return,
+        }
+    }
+}
 
 // Experimenting with new pattern of separating factory methods from instance methods
 // by using separate creator struct for creation.
@@ -232,6 +283,10 @@ impl TestUtilCluster {
 
     pub fn client(&self, client_id: &str) -> &raft::RaftClient {
         self.clients.get(client_id).unwrap()
+    }
+
+    pub fn remove(&mut self, client_id: &str) -> raft::RaftClient {
+        self.clients.remove(client_id).unwrap()
     }
 }
 
