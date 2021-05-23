@@ -17,7 +17,7 @@ pub use api::ElectionEvent;
 pub use api::EntryKey;
 pub use api::Event;
 pub use api::EventListener;
-pub use api::FollowerEventData;
+pub use api::LeaderInfo;
 pub use api::MemberInfo;
 pub use api::MemberInfoBlob;
 pub use api::RaftClient;

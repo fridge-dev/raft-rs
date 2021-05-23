@@ -1,5 +1,5 @@
-use crate::replica::ElectionStateChangeListener;
-use crate::replica::ElectionStateSnapshot;
+use crate::api::LeaderInfo;
+use crate::replica;
 
 // This is a really lazy event bus style just to expose *any* API to the consumer. I will probably
 // have to re-write this at some point to be more easily usable and expose APIs for properly filtered
@@ -18,21 +18,16 @@ pub enum Event {
 pub enum ElectionEvent {
     Leader,
     Candidate,
-    Follower(FollowerEventData),
+    Follower(LeaderInfo),
     FollowerNoLeader,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FollowerEventData {
-    pub leader_replica_id: String,
-}
-
 pub struct EventListener {
-    election_state_change_listener: ElectionStateChangeListener,
+    election_state_change_listener: replica::ElectionStateChangeListener,
 }
 
 impl EventListener {
-    pub(crate) fn new(election_state_change_listener: ElectionStateChangeListener) -> Self {
+    pub(crate) fn new(election_state_change_listener: replica::ElectionStateChangeListener) -> Self {
         EventListener {
             election_state_change_listener,
         }
@@ -40,8 +35,7 @@ impl EventListener {
 
     /// `next_event()` returns the next event that this local raft replica observes.
     pub async fn next_event(&mut self) -> Option<Event> {
-        self
-            .election_state_change_listener
+        self.election_state_change_listener
             .next()
             .await
             .map(|election_state| Event::Election(ElectionEvent::from(election_state)))
@@ -50,15 +44,13 @@ impl EventListener {
 
 // ------- Conversions --------
 
-impl From<ElectionStateSnapshot> for ElectionEvent {
-    fn from(election_state: ElectionStateSnapshot) -> Self {
+impl From<replica::ElectionStateSnapshot> for ElectionEvent {
+    fn from(election_state: replica::ElectionStateSnapshot) -> Self {
         match election_state {
-            ElectionStateSnapshot::Leader => ElectionEvent::Leader,
-            ElectionStateSnapshot::Candidate => ElectionEvent::Candidate,
-            ElectionStateSnapshot::Follower(leader_id) => ElectionEvent::Follower(FollowerEventData {
-                leader_replica_id: leader_id.into_inner(),
-            }),
-            ElectionStateSnapshot::FollowerNoLeader => ElectionEvent::FollowerNoLeader,
+            replica::ElectionStateSnapshot::Leader => ElectionEvent::Leader,
+            replica::ElectionStateSnapshot::Candidate => ElectionEvent::Candidate,
+            replica::ElectionStateSnapshot::Follower(leader) => ElectionEvent::Follower(LeaderInfo::from(leader)),
+            replica::ElectionStateSnapshot::FollowerNoLeader => ElectionEvent::FollowerNoLeader,
         }
     }
 }

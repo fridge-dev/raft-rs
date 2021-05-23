@@ -20,11 +20,7 @@ pub struct RaftClient {
 
 impl RaftClient {
     pub fn destruct(self) -> (ReplicatedLog, CommitStream, EventListener) {
-        (
-            self.replication_log,
-            self.commit_stream,
-            self.event_listener,
-        )
+        (self.replication_log, self.commit_stream, self.event_listener)
     }
 }
 

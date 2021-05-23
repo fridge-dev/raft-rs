@@ -30,9 +30,9 @@ async fn leader_election_and_redirect() {
         .await;
 
     let redirected_to = match output {
-        Err(raft::StartReplicationError::LeaderRedirect { leader_id, .. }) => {
-            println!("Redirected to {:?}", leader_id);
-            leader_id
+        Err(raft::StartReplicationError::LeaderRedirect(leader_info)) => {
+            println!("Redirected to {:?}", leader_info);
+            leader_info.replica_id
         }
         Ok(ok) => {
             panic!(
@@ -258,7 +258,7 @@ impl TestUtilCluster {
 
             match event {
                 raft::Event::Election(raft::ElectionEvent::Leader) => return client_id.to_string(),
-                raft::Event::Election(raft::ElectionEvent::Follower(data)) => return data.leader_replica_id,
+                raft::Event::Election(raft::ElectionEvent::Follower(leader)) => return leader.replica_id,
                 raft::Event::Election(raft::ElectionEvent::Candidate) => { /* Continue */ }
                 raft::Event::Election(raft::ElectionEvent::FollowerNoLeader) => { /* Continue */ }
             }

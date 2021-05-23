@@ -14,8 +14,8 @@ use crate::replica::peer_client::RaftClient;
 use crate::replica::peers::{ClusterTracker, Peer, ReplicaId};
 use crate::replica::replica_api::{
     AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesReplyFromPeer,
-    EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, RequestVoteError,
-    RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
+    EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, LeaderRedirectInfo,
+    RequestVoteError, RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
 };
 use crate::replica::{
     AppendEntriesReplyFromPeerDescriptor, AppendEntriesReplyFromPeerError, LeaderTimerTick, RequestVoteResult,
@@ -101,21 +101,8 @@ where
         // Leader check
         match self.election_state.current_state() {
             ElectionStateSnapshot::Leader => { /* carry on */ }
-            ElectionStateSnapshot::Follower(leader_id) => {
-                match self.cluster_tracker.metadata(&leader_id) {
-                    Some(leader) => {
-                        return Err(EnqueueForReplicationError::LeaderRedirect {
-                            leader_id,
-                            leader_ip: leader.ip_addr(),
-                            leader_blob: leader.info_blob(),
-                        });
-                    }
-                    None => {
-                        // This branch should technically be impossible.
-                        // TODO:2.5 We can code-ify that by changing FollowerState to have IpAddr as well.
-                        return Err(EnqueueForReplicationError::NoLeader);
-                    }
-                }
+            ElectionStateSnapshot::Follower(leader_redir_info) => {
+                return Err(EnqueueForReplicationError::LeaderRedirect(leader_redir_info));
             }
             ElectionStateSnapshot::Candidate => {
                 return Err(EnqueueForReplicationError::NoLeader);
@@ -339,9 +326,14 @@ where
         input: AppendEntriesInput,
     ) -> Result<AppendEntriesOutput, AppendEntriesError> {
         // Ensure candidate is known member.
-        if !self.cluster_tracker.contains_member(&input.leader_id) {
-            return Err(AppendEntriesError::ClientNotInCluster);
-        }
+        let leader_redir_info = match self.cluster_tracker.metadata(&input.leader_id) {
+            Some(md) => LeaderRedirectInfo {
+                replica_id: md.replica_id().clone(),
+                ip_addr: md.ip_addr(),
+                replica_blob: md.info_blob(),
+            },
+            None => return Err(AppendEntriesError::ClientNotInCluster),
+        };
 
         // 1. Reply false if term < currentTerm (§5.1)
         let current_term = self.local_state.current_term();
@@ -355,10 +347,9 @@ where
         // > set currentTerm = T, convert to follower (§5.1)
         let increased = self.local_state.store_term_if_increased(input.leader_term);
         if increased {
-            self.election_state
-                .transition_to_follower(Some(input.leader_id.clone()));
+            self.election_state.transition_to_follower(Some(leader_redir_info));
         } else {
-            self.election_state.set_leader_if_unknown(&input.leader_id);
+            self.election_state.set_leader_if_unknown(&leader_redir_info);
         }
 
         // Reset follower timeout.

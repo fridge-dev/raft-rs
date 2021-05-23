@@ -6,6 +6,7 @@ mod factory;
 mod options;
 
 pub use client::EntryKey;
+pub use client::LeaderInfo;
 pub use client::MemberInfoBlob;
 pub use client::ReplicatedLog;
 pub use client::StartReplicationError;
@@ -16,7 +17,6 @@ pub use commit_stream::CommittedEntry;
 pub use event_bus::ElectionEvent;
 pub use event_bus::Event;
 pub use event_bus::EventListener;
-pub use event_bus::FollowerEventData;
 pub use factory::create_raft_client;
 pub use factory::ClusterInfo;
 pub use factory::MemberInfo;

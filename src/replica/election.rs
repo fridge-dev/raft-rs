@@ -1,6 +1,7 @@
 use crate::actor;
 use crate::commitlog::Index;
 use crate::replica::peers::ReplicaId;
+use crate::replica::replica_api::LeaderRedirectInfo;
 use crate::replica::timers::{FollowerTimerHandle, LeaderTimerHandle};
 use crate::replica::Term;
 use std::collections::hash_map::Values;
@@ -50,9 +51,9 @@ impl ElectionState {
         (election_state, listener)
     }
 
-    pub fn transition_to_follower(&mut self, new_leader_id: Option<ReplicaId>) {
+    pub fn transition_to_follower(&mut self, new_leader: Option<LeaderRedirectInfo>) {
         self.state = State::Follower(FollowerState::with_leader_info(
-            new_leader_id,
+            new_leader,
             self.config.follower_min_timeout,
             self.config.follower_max_timeout,
             self.actor_client.clone(),
@@ -98,11 +99,11 @@ impl ElectionState {
         match state {
             State::Leader(_) => ElectionStateSnapshot::Leader,
             State::Candidate(_) => ElectionStateSnapshot::Candidate,
-            State::Follower(FollowerState { leader_id: None, .. }) => ElectionStateSnapshot::FollowerNoLeader,
+            State::Follower(FollowerState { leader: None, .. }) => ElectionStateSnapshot::FollowerNoLeader,
             State::Follower(FollowerState {
-                leader_id: Some(leader_id),
+                leader: Some(leader_info),
                 ..
-            }) => ElectionStateSnapshot::Follower(leader_id.clone()),
+            }) => ElectionStateSnapshot::Follower(leader_info.clone()),
         }
     }
 
@@ -117,10 +118,11 @@ impl ElectionState {
         }
     }
 
-    pub fn set_leader_if_unknown(&mut self, leader_id: &ReplicaId) {
+    // TODO:3 learn about Cow and consider using Cow<LeaderRedirectInfo>
+    pub fn set_leader_if_unknown(&mut self, leader: &LeaderRedirectInfo) {
         if let State::Follower(fs) = &mut self.state {
-            if fs.leader_id.is_none() {
-                fs.leader_id.replace(leader_id.clone());
+            if fs.leader.is_none() {
+                fs.leader.replace(leader.clone());
                 self.notify_new_state();
             }
         }
@@ -150,19 +152,19 @@ impl fmt::Debug for ElectionState {
             State::Leader(_) => write!(f, "Leader"),
             State::Candidate(_) => write!(f, "Candidate"),
             State::Follower(FollowerState {
-                leader_id: Some(leader_id),
+                leader: Some(leader_info),
                 ..
-            }) => write!(f, "Follower(Leader={:?})", leader_id),
-            State::Follower(FollowerState { leader_id: None, .. }) => write!(f, "Follower(Leader=None)"),
+            }) => write!(f, "Follower(Leader={:?})", leader_info.replica_id),
+            State::Follower(FollowerState { leader: None, .. }) => write!(f, "Follower(Leader=None)"),
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ElectionStateSnapshot {
     Leader,
     Candidate,
-    Follower(ReplicaId),
+    Follower(LeaderRedirectInfo),
     FollowerNoLeader,
 }
 
@@ -182,7 +184,7 @@ struct CandidateState {
 }
 
 struct FollowerState {
-    leader_id: Option<ReplicaId>,
+    leader: Option<LeaderRedirectInfo>,
     follower_timeout_tracker: FollowerTimerHandle,
 }
 
@@ -227,19 +229,19 @@ impl CandidateState {
 impl FollowerState {
     pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::WeakActorClient) -> Self {
         FollowerState {
-            leader_id: None,
+            leader: None,
             follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(min_timeout, max_timeout, actor_client),
         }
     }
 
     pub fn with_leader_info(
-        leader_id: Option<ReplicaId>,
+        leader: Option<LeaderRedirectInfo>,
         min_timeout: Duration,
         max_timeout: Duration,
         actor_client: actor::WeakActorClient,
     ) -> Self {
         FollowerState {
-            leader_id,
+            leader,
             follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(min_timeout, max_timeout, actor_client),
         }
     }

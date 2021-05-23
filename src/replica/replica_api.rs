@@ -19,11 +19,7 @@ pub struct EnqueueForReplicationOutput {
 #[derive(Debug, thiserror::Error)]
 pub enum EnqueueForReplicationError {
     #[error("I'm not leader")]
-    LeaderRedirect {
-        leader_id: ReplicaId,
-        leader_ip: Ipv4Addr,
-        leader_blob: ReplicaBlob,
-    },
+    LeaderRedirect(LeaderRedirectInfo),
 
     // Can be retried with exponential backoff with recommended initial delay of 200ms. Likely an
     // election is in progress.
@@ -35,6 +31,13 @@ pub enum EnqueueForReplicationError {
 
     #[error("Replica actor is dead RIP")]
     ActorExited,
+}
+
+#[derive(Debug, Clone)]
+pub struct LeaderRedirectInfo {
+    pub replica_id: ReplicaId,
+    pub ip_addr: Ipv4Addr,
+    pub replica_blob: ReplicaBlob,
 }
 
 #[derive(Debug)]
