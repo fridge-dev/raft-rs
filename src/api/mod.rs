@@ -1,6 +1,7 @@
 //! This mod is meant to hold most of the code for the library's client-facing API.
 mod client;
 mod commit_stream;
+mod event_bus;
 mod factory;
 mod options;
 
@@ -12,6 +13,10 @@ pub use client::StartReplicationInput;
 pub use client::StartReplicationOutput;
 pub use commit_stream::CommitStream;
 pub use commit_stream::CommittedEntry;
+pub use event_bus::ElectionEvent;
+pub use event_bus::Event;
+pub use event_bus::EventListener;
+pub use event_bus::FollowerEventData;
 pub use factory::create_raft_client;
 pub use factory::ClusterInfo;
 pub use factory::MemberInfo;

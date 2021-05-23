@@ -3,7 +3,6 @@
 use bytes::Bytes;
 use chrono::Utc;
 use raft;
-use raft::ElectionStateSnapshot;
 use slog::Drain;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -126,7 +125,7 @@ async fn graceful_shutdown() {
     // Get non-leader
     let non_leader_id = cluster.non_leader_id(&leader_id);
     let non_leader_client = cluster.remove(&non_leader_id);
-    let (replication_log, mut commit_stream, election_state_change_listener) = non_leader_client.destruct();
+    let (replication_log, mut commit_stream, event_listener) = non_leader_client.destruct();
 
     // Kill replica actor. It is a local decision, so imagine other replicas can't know. The proper
     // way would be to leave the cluster, then kill the replica actor, but we haven't implemented
@@ -135,7 +134,7 @@ async fn graceful_shutdown() {
     drop(replication_log);
 
     // Assert termination and no panics
-    assert_election_event_bus_closed(Duration::from_secs(3), election_state_change_listener).await;
+    assert_event_bus_closed(Duration::from_secs(3), event_listener).await;
     assert_matches!(
         tokio::time::timeout(Duration::from_secs(3), commit_stream.next()).await,
         Ok(None),
@@ -144,16 +143,13 @@ async fn graceful_shutdown() {
     // TODO:2 assert that host is not listening on port anymore.
 }
 
-async fn assert_election_event_bus_closed(
-    timeout: Duration,
-    mut election_state_change_listener: raft::ElectionStateChangeListener,
-) {
+async fn assert_event_bus_closed(timeout: Duration, mut event_listener: raft::EventListener) {
     let deadline = Instant::now() + timeout;
     loop {
-        let state = tokio::time::timeout_at(deadline, election_state_change_listener.next())
+        let event = tokio::time::timeout_at(deadline, event_listener.next_event())
             .await
             .expect("Timed out waiting for election event bus next()");
-        match state {
+        match event {
             Some(s) => println!("Received {:?}", s),
             None => return,
         }
@@ -255,17 +251,16 @@ impl TestUtilCluster {
 
     async fn wait_for_leader_id(client: &mut raft::RaftClient, client_id: &str, deadline: Instant) -> String {
         loop {
-            let election_state = tokio::time::timeout_at(deadline, client.election_state_change_listener.next())
+            let event = tokio::time::timeout_at(deadline, client.event_listener.next_event())
                 .await
                 .expect("Timeout waiting for leader election")
                 .expect("Expected election event bus to be alive");
 
-            match election_state {
-                ElectionStateSnapshot::Leader => return client_id.to_string(),
-                // TODO:1 fix bad layer of abstraction, `ReplicaId`
-                ElectionStateSnapshot::Follower(leader_id) => return leader_id.into_inner(),
-                ElectionStateSnapshot::Candidate => { /* Continue */ }
-                ElectionStateSnapshot::FollowerNoLeader => { /* Continue */ }
+            match event {
+                raft::Event::Election(raft::ElectionEvent::Leader) => return client_id.to_string(),
+                raft::Event::Election(raft::ElectionEvent::Follower(data)) => return data.leader_replica_id,
+                raft::Event::Election(raft::ElectionEvent::Candidate) => { /* Continue */ }
+                raft::Event::Election(raft::ElectionEvent::FollowerNoLeader) => { /* Continue */ }
             }
         }
     }

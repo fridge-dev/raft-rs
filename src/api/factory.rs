@@ -5,24 +5,25 @@ use crate::commitlog::InMemoryLog;
 use crate::replica::{ClusterTracker, Replica, ReplicaConfig, VolatileLocalState};
 use crate::server;
 use crate::server::RpcServer;
-use crate::{api, replica, CommitStream, ElectionStateChangeListener, RaftOptions, ReplicatedLog};
+use crate::{api, replica, CommitStream, EventListener, RaftOptions, ReplicatedLog};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
+/// RaftClient is the conglomeration of all of the client facing components.
 pub struct RaftClient {
     pub replication_log: ReplicatedLog,
     pub commit_stream: CommitStream,
-    pub election_state_change_listener: ElectionStateChangeListener,
+    pub event_listener: EventListener,
 }
 
 impl RaftClient {
-    pub fn destruct(self) -> (ReplicatedLog, CommitStream, ElectionStateChangeListener) {
+    pub fn destruct(self) -> (ReplicatedLog, CommitStream, EventListener) {
         (
             self.replication_log,
             self.commit_stream,
-            self.election_state_change_listener,
+            self.event_listener,
         )
     }
 }
@@ -78,10 +79,12 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<RaftClient, 
 
     let replication_log = ReplicatedLog::new(actor_client);
 
+    let event_listener = EventListener::new(election_state_change_listener);
+
     Ok(RaftClient {
         replication_log,
         commit_stream,
-        election_state_change_listener,
+        event_listener,
     })
 }
 

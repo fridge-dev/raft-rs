@@ -13,7 +13,11 @@ pub use api::create_raft_client;
 pub use api::ClusterInfo;
 pub use api::CommitStream;
 pub use api::CommittedEntry;
+pub use api::ElectionEvent;
 pub use api::EntryKey;
+pub use api::Event;
+pub use api::EventListener;
+pub use api::FollowerEventData;
 pub use api::MemberInfo;
 pub use api::MemberInfoBlob;
 pub use api::RaftClient;
@@ -23,10 +27,6 @@ pub use api::ReplicatedLog;
 pub use api::StartReplicationError;
 pub use api::StartReplicationInput;
 pub use api::StartReplicationOutput;
-
-// TODO:2 refactor to create an api::* abstraction
-pub use replica::ElectionStateChangeListener;
-pub use replica::ElectionStateSnapshot;
 
 // Learning 1: `crate::{root_mod}` should not have any code. Just `mod` and `pub use` statements.
 // Learning 2: All `mod` statements, anywhere, should not be `pub`. Only export `pub` via individual
