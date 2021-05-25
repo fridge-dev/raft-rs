@@ -206,9 +206,9 @@ where
     }
 
     fn apply_single_entry(&mut self, index_to_apply: Index) -> Result<(), io::Error> {
-        // TODO:2 implement batch/streamed read.
+        // TODO:2.5 implement batch/streamed read.
         // TODO:3 Make failure less likely by buffering in memory limited number of recent uncommited entries.
-        // TODO:2 validate and/or gracefully handle.
+        // TODO:2.5 validate and/or gracefully handle.
         let entry = self.read_required(index_to_apply)?;
 
         self.commit_stream.notify_commit(
@@ -256,8 +256,8 @@ impl commitlog::Entry for RaftLogEntry {}
 
 impl From<Vec<u8>> for RaftLogEntry {
     fn from(bytes: Vec<u8>) -> Self {
-        // TODO:2 research how to do this correctly, safely, and efficiently.
-        // TODO:2 use TryFrom so we can return error
+        // TODO:2.5 research how to do this correctly, safely, and efficiently.
+        // TODO:2.5 use TryFrom so we can return error
         assert!(bytes.len() >= 9);
         assert_eq!(bytes[0], RAFT_LOG_ENTRY_FORMAT_VERSION);
 

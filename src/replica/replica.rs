@@ -61,6 +61,8 @@ where
     _server_shutdown: server::RpcServerShutdownHandle,
 }
 
+// TODO:1 Implement cluster membership changes.
+// TODO:1 Implement log compaction.
 impl<L, S> Replica<L, S>
 where
     L: Log<RaftLogEntry> + 'static,
@@ -112,7 +114,7 @@ where
             }
         }
 
-        // TODO:2 throttle based on number of uncommitted entries.
+        // TODO:2.5 throttle based on number of uncommitted entries.
 
         // > If command received from client: append entry to local log,
         // > respond after entry applied to state machine (§5.3)
@@ -297,7 +299,7 @@ where
             }
             RequestVoteResult::RetryableFailure | RequestVoteResult::MalformedReply => {
                 if let Some(peer) = self.cluster_tracker.peer(&reply.peer_id) {
-                    // TODO:2 add RequestId to remote call
+                    // TODO:2.5 add RequestId to remote call
                     tokio::task::spawn(Self::call_peer_request_vote(
                         self.logger.clone(),
                         peer.client.clone(),
@@ -325,7 +327,8 @@ where
         &mut self,
         input: AppendEntriesInput,
     ) -> Result<AppendEntriesOutput, AppendEntriesError> {
-        // Ensure candidate is known member.
+        // Ensure candidate is known member. Note: This might be incorrect in context of membership
+        // changes. Revisit then.
         let leader_redir_info = match self.cluster_tracker.metadata(&input.leader_id) {
             Some(md) => LeaderRedirectInfo {
                 replica_id: md.replica_id().clone(),
@@ -380,7 +383,8 @@ where
         };
         let mut last_appended_index = next_entry_index.checked_minus(1);
         for new_entry in input.new_entries.iter() {
-            // TODO:2 optimize read to not happen if we know we've truncated log in a previous iteration, or if we're missing an entry from a previous iteration.
+            // TODO:2.5 optimize read to not happen if we know we've truncated log in a previous
+            //          iteration, or if we're missing an entry from a previous iteration.
             let opt_existing_entry = self
                 .commit_log
                 .read(next_entry_index)
@@ -428,13 +432,20 @@ where
         // TODO:1 Validate what "index of last new entry" means when new_entries is empty
         match (input.leader_commit_index, self.commit_log.commit_index()) {
             (None, None) => { /* Nothing to do */ }
-            (None, Some(my_commit_index)) => panic!(
-                "My commit index ({:?}) is non-0 but leader ({:?})'s commit index is 0. This should be impossible.",
-                my_commit_index, input.leader_id
-            ),
+            (None, Some(my_commit_index)) => {
+                // This is remotely possible if leader with same log as us, but didn't observe
+                // latest commit index from previous leader, is elected.
+                slog::warn!(
+                    self.logger,
+                    "My commit index ({:?}) is non-0 but leader ({:?})'s commit index is 0. Interesting...",
+                    my_commit_index,
+                    input.leader_id,
+                );
+            },
             (Some(leader_commit_index), None) => {
                 let new_commit_index = match last_appended_index {
                     Some(my_last_index) => cmp::min(leader_commit_index, my_last_index),
+                    // TODO:1 see above, I think this is wrong, it should be none?
                     None => leader_commit_index,
                 };
                 self.commit_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
@@ -675,8 +686,8 @@ where
                     &self.commit_log,
                 )?;
 
-                // TODO:2 add RequestId to remote call
-                // TODO:2 change to use `async move` and put methods on peer or peer.client
+                // TODO:2.5 add RequestId to remote call
+                // TODO:2.5 change to use `async move` and put methods on peer or peer.client
                 tokio::task::spawn(Self::call_peer_append_entries(
                     self.logger.clone(),
                     peer.client,
@@ -771,7 +782,7 @@ where
         );
 
         for peer in self.cluster_tracker.iter_peers() {
-            // TODO:2 add RequestId to remote call
+            // TODO:2.5 add RequestId to remote call
             tokio::task::spawn(Self::call_peer_request_vote(
                 self.logger.clone(),
                 peer.client.clone(),

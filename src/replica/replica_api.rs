@@ -13,6 +13,7 @@ pub struct EnqueueForReplicationInput {
 #[derive(Debug)]
 pub struct EnqueueForReplicationOutput {
     pub enqueued_term: Term,
+    // TODO:2.5 Index is type from commitlog crate. Bad abstraction. Fix it.
     pub enqueued_index: Index,
 }
 
@@ -44,6 +45,7 @@ pub struct LeaderRedirectInfo {
 pub struct RequestVoteInput {
     pub candidate_term: Term,
     pub candidate_id: ReplicaId,
+    // TODO:2.5 Index is type from commitlog crate. Bad abstraction. Fix it.
     pub candidate_last_log_entry: Option<(Term, Index)>,
 }
 
@@ -67,9 +69,9 @@ pub struct AppendEntriesInput {
     pub leader_term: Term,
     pub leader_id: ReplicaId,
     // "Previous log entry" is the log entry immediately preceding the new ones in AppendEntriesInput.
-    // TODO:2 Index is type from commitlog crate. Bad abstraction. Fix it.
+    // TODO:2.5 Index is type from commitlog crate. Bad abstraction. Fix it.
     pub leader_previous_log_entry: Option<(Term, Index)>,
-    // TODO:2 Index is type from commitlog crate. Bad abstraction. Fix it.
+    // TODO:2.5 Index is type from commitlog crate. Bad abstraction. Fix it.
     pub leader_commit_index: Option<Index>,
     pub new_entries: Vec<AppendEntriesLogEntry>,
 }
