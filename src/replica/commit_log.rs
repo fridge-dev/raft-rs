@@ -215,7 +215,7 @@ where
             &self.logger,
             api::CommittedEntry {
                 data: Bytes::from(entry.data),
-                key: api::EntryKey {
+                entry_id: api::EntryId {
                     term: entry.term,
                     entry_index: index_to_apply,
                 },

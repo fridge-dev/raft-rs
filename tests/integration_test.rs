@@ -25,12 +25,12 @@ async fn leader_election_and_redirect() {
     // Try to find leader via redirect
     let output = cluster
         .client(&non_leader_id)
-        .replication_log
-        .start_replication(raft::StartReplicationInput { data: Bytes::default() })
+        .replicated_log
+        .enqueue_entry(raft::EnqueueEntryInput { data: Bytes::default() })
         .await;
 
     let redirected_to = match output {
-        Err(raft::StartReplicationError::LeaderRedirect(leader_info)) => {
+        Err(raft::EnqueueEntryError::LeaderRedirect(leader_info)) => {
             println!("Redirected to {:?}", leader_info);
             leader_info.replica_id
         }
@@ -49,8 +49,8 @@ async fn leader_election_and_redirect() {
     // Confirm leader
     cluster
         .client(&leader_id)
-        .replication_log
-        .start_replication(raft::StartReplicationInput { data: Bytes::default() })
+        .replicated_log
+        .enqueue_entry(raft::EnqueueEntryInput { data: Bytes::default() })
         .await
         .unwrap();
 }
@@ -69,12 +69,12 @@ async fn simple_commit() {
     // Wait for leader election
     let leader_id = cluster.discover_leader_id(Duration::from_secs(10)).await;
 
-    // Start repl of an entry
+    // Enqueue repl of an entry
     let data_to_replicate = Bytes::from(String::from("Hello world"));
     let output = cluster
         .client(&leader_id)
-        .replication_log
-        .start_replication(raft::StartReplicationInput {
+        .replicated_log
+        .enqueue_entry(raft::EnqueueEntryInput {
             data: data_to_replicate.clone(),
         })
         .await
@@ -82,8 +82,8 @@ async fn simple_commit() {
 
     // Assert that all clients observe that the entry becomes committed.
     for (_, c) in cluster.clients.iter_mut() {
-        let committed = c.commit_stream.next().await.unwrap();
-        assert_eq!(committed.key, output.key);
+        let committed = c.commit_stream.next_entry().await.unwrap();
+        assert_eq!(committed.entry_id, output.entry_id);
         assert_eq!(committed.data, data_to_replicate);
     }
 
@@ -94,8 +94,8 @@ async fn simple_commit() {
     let data_to_replicate = Bytes::from(String::from("it's me"));
     let output = cluster
         .client(&leader_id)
-        .replication_log
-        .start_replication(raft::StartReplicationInput {
+        .replicated_log
+        .enqueue_entry(raft::EnqueueEntryInput {
             data: data_to_replicate.clone(),
         })
         .await
@@ -103,8 +103,8 @@ async fn simple_commit() {
 
     // Assert that all clients observe that the entry becomes committed.
     for (_, c) in cluster.clients.iter_mut() {
-        let committed = c.commit_stream.next().await.unwrap();
-        assert_eq!(committed.key, output.key);
+        let committed = c.commit_stream.next_entry().await.unwrap();
+        assert_eq!(committed.entry_id, output.entry_id);
         assert_eq!(committed.data, data_to_replicate);
     }
 }
@@ -125,18 +125,18 @@ async fn graceful_shutdown() {
     // Get non-leader
     let non_leader_id = cluster.non_leader_id(&leader_id);
     let non_leader_client = cluster.remove(&non_leader_id);
-    let (replication_log, mut commit_stream, event_listener) = non_leader_client.destruct();
+    let (replicated_log, mut commit_stream, event_listener) = non_leader_client.destruct();
 
     // Kill replica actor. It is a local decision, so imagine other replicas can't know. The proper
     // way would be to leave the cluster, then kill the replica actor, but we haven't implemented
     // leave cluster operation.
     println!("Dropping {}", non_leader_id);
-    drop(replication_log);
+    drop(replicated_log);
 
     // Assert termination and no panics
     assert_event_bus_closed(Duration::from_secs(3), event_listener).await;
     assert_matches!(
-        tokio::time::timeout(Duration::from_secs(3), commit_stream.next()).await,
+        tokio::time::timeout(Duration::from_secs(3), commit_stream.next_entry()).await,
         Ok(None),
         "commit_stream did not exit correctly"
     );

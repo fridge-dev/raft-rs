@@ -16,10 +16,7 @@ impl ReplicatedLog {
         ReplicatedLog { actor_client }
     }
 
-    pub async fn start_replication(
-        &self,
-        input: StartReplicationInput,
-    ) -> Result<StartReplicationOutput, StartReplicationError> {
+    pub async fn enqueue_entry(&self, input: EnqueueEntryInput) -> Result<EnqueueEntryOutput, EnqueueEntryError> {
         let replica_input = replica::EnqueueForReplicationInput { data: input.data };
 
         self.actor_client
@@ -31,24 +28,25 @@ impl ReplicatedLog {
 }
 
 #[derive(Debug)]
-pub struct StartReplicationInput {
+pub struct EnqueueEntryInput {
+    // TODO:3 consider new-typing `EntryData(Bytes)` or whatever type we use internally (here and commit stream).
     pub data: Bytes,
 }
 
 #[derive(Debug)]
-pub struct StartReplicationOutput {
-    pub key: EntryKey,
+pub struct EnqueueEntryOutput {
+    pub entry_id: EntryId,
 }
 
 // Opaque type for application to match CommittedEntry with.
 #[derive(Debug, PartialEq)]
-pub struct EntryKey {
+pub struct EntryId {
     pub(crate) term: Term,
     pub(crate) entry_index: Index,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum StartReplicationError {
+pub enum EnqueueEntryError {
     #[error("I'm not leader")]
     LeaderRedirect(LeaderInfo),
 
@@ -91,10 +89,10 @@ impl MemberInfoBlob {
 
 // ------- Conversions --------
 
-impl From<replica::EnqueueForReplicationOutput> for StartReplicationOutput {
+impl From<replica::EnqueueForReplicationOutput> for EnqueueEntryOutput {
     fn from(internal_output: replica::EnqueueForReplicationOutput) -> Self {
-        StartReplicationOutput {
-            key: EntryKey {
+        EnqueueEntryOutput {
+            entry_id: EntryId {
                 term: internal_output.enqueued_term,
                 entry_index: internal_output.enqueued_index,
             },
@@ -102,15 +100,15 @@ impl From<replica::EnqueueForReplicationOutput> for StartReplicationOutput {
     }
 }
 
-impl From<replica::EnqueueForReplicationError> for StartReplicationError {
+impl From<replica::EnqueueForReplicationError> for EnqueueEntryError {
     fn from(internal_error: replica::EnqueueForReplicationError) -> Self {
         match internal_error {
             replica::EnqueueForReplicationError::LeaderRedirect(leader_info) => {
-                StartReplicationError::LeaderRedirect(LeaderInfo::from(leader_info))
+                EnqueueEntryError::LeaderRedirect(LeaderInfo::from(leader_info))
             }
-            replica::EnqueueForReplicationError::NoLeader => StartReplicationError::NoLeader,
-            replica::EnqueueForReplicationError::LocalIoError(e) => StartReplicationError::LocalIoError(e),
-            replica::EnqueueForReplicationError::ActorExited => StartReplicationError::ReplicaExited,
+            replica::EnqueueForReplicationError::NoLeader => EnqueueEntryError::NoLeader,
+            replica::EnqueueForReplicationError::LocalIoError(e) => EnqueueEntryError::LocalIoError(e),
+            replica::EnqueueForReplicationError::ActorExited => EnqueueEntryError::ReplicaExited,
         }
     }
 }

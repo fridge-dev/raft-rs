@@ -110,7 +110,7 @@ mod accumulator_impl {
             .await?;
 
             Ok(Accumulator {
-                replicated_log: client.replication_log,
+                replicated_log: client.replicated_log,
                 commit_stream: client.commit_stream,
                 state_machine: AccumulatorStateMachine::default(),
             })
@@ -119,12 +119,12 @@ mod accumulator_impl {
         pub async fn add(&mut self, key: String, value: i64) -> Result<i64, Box<dyn Error>> {
             // Phase 1 - enqueue for repl
             let data = encode_kv(key, value);
-            let start_repl_input = raft::StartReplicationInput { data };
-            let start_repl_output = self.replicated_log.start_replication(start_repl_input).await?;
+            let enqueue_entry_input = raft::EnqueueEntryInput { data };
+            let enqueue_entry_output = self.replicated_log.enqueue_entry(enqueue_entry_input).await?;
 
             // Phase 2 - wait for commit and validate
-            let committed_entry = self.commit_stream.next().await.unwrap();
-            assert_eq!(start_repl_output.key, committed_entry.key);
+            let committed_entry = self.commit_stream.next_entry().await.unwrap();
+            assert_eq!(enqueue_entry_output.entry_id, committed_entry.entry_id);
             let (key, value) = decode_kv(committed_entry.data);
 
             // Apply to state machine

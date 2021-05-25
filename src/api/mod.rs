@@ -5,13 +5,13 @@ mod event_bus;
 mod factory;
 mod options;
 
-pub use client::EntryKey;
+pub use client::EnqueueEntryError;
+pub use client::EnqueueEntryInput;
+pub use client::EnqueueEntryOutput;
+pub use client::EntryId;
 pub use client::LeaderInfo;
 pub use client::MemberInfoBlob;
 pub use client::ReplicatedLog;
-pub use client::StartReplicationError;
-pub use client::StartReplicationInput;
-pub use client::StartReplicationOutput;
 pub use commit_stream::CommitStream;
 pub use commit_stream::CommittedEntry;
 pub use event_bus::ElectionEvent;

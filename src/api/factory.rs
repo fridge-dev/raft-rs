@@ -13,14 +13,14 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 /// RaftClient is the conglomeration of all of the client facing components.
 pub struct RaftClient {
-    pub replication_log: ReplicatedLog,
+    pub replicated_log: ReplicatedLog,
     pub commit_stream: CommitStream,
     pub event_listener: EventListener,
 }
 
 impl RaftClient {
     pub fn destruct(self) -> (ReplicatedLog, CommitStream, EventListener) {
-        (self.replication_log, self.commit_stream, self.event_listener)
+        (self.replicated_log, self.commit_stream, self.event_listener)
     }
 }
 
@@ -73,12 +73,12 @@ pub async fn create_raft_client(config: RaftClientConfig) -> Result<RaftClient, 
     let replica_raft_server = RpcServer::new(root_logger.clone(), actor_client.weak());
     tokio::spawn(replica_raft_server.run(server_addr, server_shutdown_signal));
 
-    let replication_log = ReplicatedLog::new(actor_client);
+    let replicated_log = ReplicatedLog::new(actor_client);
 
     let event_listener = EventListener::new(election_state_change_listener);
 
     Ok(RaftClient {
-        replication_log,
+        replicated_log,
         commit_stream,
         event_listener,
     })

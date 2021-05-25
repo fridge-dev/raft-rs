@@ -1,4 +1,4 @@
-use crate::EntryKey;
+use crate::EntryId;
 use bytes::Bytes;
 use std::fmt;
 use tokio::sync::mpsc;
@@ -30,14 +30,14 @@ pub struct CommitStream {
 }
 
 pub struct CommittedEntry {
-    pub key: EntryKey,
+    pub entry_id: EntryId,
     pub data: Bytes,
 }
 
 impl fmt::Debug for CommittedEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CommittedEntry")
-            .field("key", &self.key)
+            .field("entry_id", &self.entry_id)
             .field("data.len()", &self.data.len())
             .finish()
     }
@@ -46,10 +46,10 @@ impl fmt::Debug for CommittedEntry {
 impl CommitStream {
     // TODO:3 How to handle when we accepted entry for repl, then lost leadership?
     //        Do we just *not* inform app layer?
-    /// `next()` returns the next committed entry to be applied to your application's state machine.
-    /// It will return None when the commit stream has been terminally closed because the handle to
-    /// the local Replica has been dropped by your application.
-    pub async fn next(&mut self) -> Option<CommittedEntry> {
+    /// `next_entry()` returns the next committed entry to be applied to your application's state
+    /// machine. It will return None when the commit stream has been terminally closed because the
+    /// handle to the ReplicatedLog has been dropped by your application.
+    pub async fn next_entry(&mut self) -> Option<CommittedEntry> {
         self.receiver.recv().await
     }
 }
