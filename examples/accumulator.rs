@@ -6,9 +6,9 @@ use tokio;
 
 #[tokio::main]
 async fn main() {
-    let cluster = fake_cluster();
-    let logger = create_root_logger_for_stdout(cluster.my_replica_id.clone());
-    let mut server = accumulator_impl::Accumulator::setup(cluster, logger)
+    let (my_replica_id, cluster) = fake_cluster();
+    let logger = create_root_logger_for_stdout(my_replica_id.clone());
+    let mut server = accumulator_impl::Accumulator::setup(my_replica_id, cluster, logger)
         .await
         .expect("WTF");
 
@@ -20,44 +20,44 @@ async fn main() {
     assert_eq!(100, server.get("k2"));
 }
 
-fn fake_cluster() -> raft::ClusterInfo {
-    let raft_rpc_port = 2021;
+fn fake_cluster() -> (String, Vec<raft::RaftMemberInfo>) {
+    let raft_internal_rpc_port = 2021;
+    let my_replica_id = "id-1".to_string();
 
-    raft::ClusterInfo {
-        my_replica_id: "id-1".into(),
-        cluster_members: vec![
-            raft::MemberInfo {
-                replica_id: "id-1".into(),
-                ip_addr: Ipv4Addr::from(0xFACE),
-                raft_rpc_port,
-                peer_redirect_info_blob: raft::MemberInfoBlob::new(1111),
-            },
-            raft::MemberInfo {
-                replica_id: "id-2".into(),
-                ip_addr: Ipv4Addr::from(0xBEEF),
-                raft_rpc_port,
-                peer_redirect_info_blob: raft::MemberInfoBlob::new(2222),
-            },
-            raft::MemberInfo {
-                replica_id: "id-3".into(),
-                ip_addr: Ipv4Addr::from(0x1337),
-                raft_rpc_port,
-                peer_redirect_info_blob: raft::MemberInfoBlob::new(3333),
-            },
-            raft::MemberInfo {
-                replica_id: "id-4".into(),
-                ip_addr: Ipv4Addr::from(0xDEAF),
-                raft_rpc_port,
-                peer_redirect_info_blob: raft::MemberInfoBlob::new(4444),
-            },
-            raft::MemberInfo {
-                replica_id: "id-5".into(),
-                ip_addr: Ipv4Addr::from(0xBEEB),
-                raft_rpc_port,
-                peer_redirect_info_blob: raft::MemberInfoBlob::new(5555),
-            },
-        ],
-    }
+    let cluster_members = vec![
+        raft::RaftMemberInfo {
+            replica_id: my_replica_id.clone(),
+            ip_addr: Ipv4Addr::from(0xFACE),
+            raft_internal_rpc_port,
+            peer_redirect_info_blob: raft::RaftMemberInfoBlob::new(1111),
+        },
+        raft::RaftMemberInfo {
+            replica_id: "id-2".into(),
+            ip_addr: Ipv4Addr::from(0xBEEF),
+            raft_internal_rpc_port,
+            peer_redirect_info_blob: raft::RaftMemberInfoBlob::new(2222),
+        },
+        raft::RaftMemberInfo {
+            replica_id: "id-3".into(),
+            ip_addr: Ipv4Addr::from(0x1337),
+            raft_internal_rpc_port,
+            peer_redirect_info_blob: raft::RaftMemberInfoBlob::new(3333),
+        },
+        raft::RaftMemberInfo {
+            replica_id: "id-4".into(),
+            ip_addr: Ipv4Addr::from(0xDEAF),
+            raft_internal_rpc_port,
+            peer_redirect_info_blob: raft::RaftMemberInfoBlob::new(4444),
+        },
+        raft::RaftMemberInfo {
+            replica_id: "id-5".into(),
+            ip_addr: Ipv4Addr::from(0xBEEB),
+            raft_internal_rpc_port,
+            peer_redirect_info_blob: raft::RaftMemberInfoBlob::new(5555),
+        },
+    ];
+
+    (my_replica_id, cluster_members)
 }
 
 #[allow(dead_code)]
@@ -95,16 +95,21 @@ mod accumulator_impl {
 
     pub struct Accumulator {
         replicated_log: raft::ReplicatedLog,
-        commit_stream: raft::CommitStream,
+        commit_stream: raft::RaftCommitStream,
         state_machine: AccumulatorStateMachine,
     }
 
     impl Accumulator {
-        pub async fn setup(cluster_info: raft::ClusterInfo, logger: slog::Logger) -> Result<Self, Box<dyn Error>> {
-            let client = raft::create_raft_client(raft::RaftClientConfig {
+        pub async fn setup(
+            my_replica_id: String,
+            cluster_members: Vec<raft::RaftMemberInfo>,
+            logger: slog::Logger,
+        ) -> Result<Self, Box<dyn Error>> {
+            let client = raft::try_create_raft_client(raft::RaftClientConfig {
+                my_replica_id,
+                cluster_members,
                 commit_log_directory: "/raft".to_string(),
                 info_logger: logger,
-                cluster_info,
                 options: RaftOptions::default(),
             })
             .await?;

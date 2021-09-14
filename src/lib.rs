@@ -1,5 +1,3 @@
-#![feature(ready_macro)]
-
 mod actor;
 mod api;
 mod commitlog;
@@ -9,22 +7,21 @@ mod grpc {
 }
 mod server;
 
-pub use api::create_raft_client;
-pub use api::ClusterInfo;
-pub use api::CommitStream;
-pub use api::CommittedEntry;
-pub use api::ElectionEvent;
+pub use api::try_create_raft_client;
 pub use api::EnqueueEntryError;
 pub use api::EnqueueEntryInput;
 pub use api::EnqueueEntryOutput;
-pub use api::EntryId;
-pub use api::Event;
-pub use api::EventListener;
-pub use api::LeaderInfo;
-pub use api::MemberInfo;
-pub use api::MemberInfoBlob;
 pub use api::RaftClient;
 pub use api::RaftClientConfig;
+pub use api::RaftCommitStream;
+pub use api::RaftCommittedEntry;
+pub use api::RaftElectionState;
+pub use api::RaftEntryId;
+pub use api::RaftEvent;
+pub use api::RaftEventListener;
+pub use api::RaftLeaderInfo;
+pub use api::RaftMemberInfo;
+pub use api::RaftMemberInfoBlob;
 pub use api::RaftOptions;
 pub use api::ReplicatedLog;
 

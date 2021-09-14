@@ -18,9 +18,9 @@ use std::io;
 ///
 /// A log entry's state has no global truth. Each replica will have their own local view of what
 /// state the log entry is in.
-pub struct RaftLog<L>
+pub struct WriteAheadLog<L>
 where
-    L: commitlog::Log<RaftLogEntry>,
+    L: commitlog::Log<LogEntry>,
 {
     // Application's info/debug log.
     logger: slog::Logger,
@@ -32,26 +32,26 @@ where
 
     // Commit stream to publish committed entries to. To be consumed by the application layer to
     // apply committed entries to their state machine.
-    commit_stream: api::CommitStreamPublisher,
+    commit_stream: api::RaftCommitStreamPublisher,
     // Index of highest log entry known to be committed. None if nothing is committed.
     commit_index: Option<Index>,
     // Index of highest log entry applied to state machine. None if nothing is applied.
     last_applied_index: Option<Index>,
 }
 
-impl<L> RaftLog<L>
+impl<L> WriteAheadLog<L>
 where
-    L: commitlog::Log<RaftLogEntry>,
+    L: commitlog::Log<LogEntry>,
 {
-    pub fn new(logger: slog::Logger, log: L, commit_stream: api::CommitStreamPublisher) -> Self {
+    pub fn new(logger: slog::Logger, log: L, commit_stream: api::RaftCommitStreamPublisher) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
         assert_eq!(
             log.next_index(),
-            Index::new(1),
+            Index::start_index(),
             "We only know how to handle initialization of an empty log."
         );
 
-        RaftLog {
+        WriteAheadLog {
             logger,
             log,
             latest_entry_metadata: None,
@@ -65,11 +65,11 @@ where
         self.latest_entry_metadata
     }
 
-    pub fn read(&self, index: Index) -> Result<Option<RaftLogEntry>, io::Error> {
+    pub fn read(&self, index: Index) -> Result<Option<LogEntry>, io::Error> {
         self.log.read(index)
     }
 
-    fn read_required(&self, index: Index) -> Result<RaftLogEntry, io::Error> {
+    fn read_required(&self, index: Index) -> Result<LogEntry, io::Error> {
         match self.read(index) {
             Ok(Some(entry)) => Ok(entry),
             Ok(None) => panic!("read_required() found no log entry for index {:?}", index),
@@ -94,7 +94,7 @@ where
         Ok(())
     }
 
-    pub fn append(&mut self, entry: RaftLogEntry) -> Result<Index, io::Error> {
+    pub fn append(&mut self, entry: LogEntry) -> Result<Index, io::Error> {
         let appended_term = entry.term;
         let appended_index = self.log.append(entry)?;
         // Only update state after log action completes.
@@ -211,16 +211,8 @@ where
         // TODO:2.5 validate and/or gracefully handle.
         let entry = self.read_required(index_to_apply)?;
 
-        self.commit_stream.notify_commit(
-            &self.logger,
-            api::CommittedEntry {
-                data: Bytes::from(entry.data),
-                entry_id: api::EntryId {
-                    term: entry.term,
-                    entry_index: index_to_apply,
-                },
-            },
-        );
+        self.commit_stream
+            .notify_commit(&self.logger, entry.term, index_to_apply, Bytes::from(entry.data));
 
         Ok(())
     }
@@ -245,16 +237,16 @@ where
 /// * Checksum is not needed, it's guaranteed by underlying commitlog.
 /// * Size/length of `Data` is not needed; the underlying commitlog will give us the correctly allocated array.
 #[derive(Clone)]
-pub struct RaftLogEntry {
+pub struct LogEntry {
     pub term: Term,
     pub data: Vec<u8>,
 }
 
 const RAFT_LOG_ENTRY_FORMAT_VERSION: u8 = 1;
 
-impl commitlog::Entry for RaftLogEntry {}
+impl commitlog::Entry for LogEntry {}
 
-impl From<Vec<u8>> for RaftLogEntry {
+impl From<Vec<u8>> for LogEntry {
     fn from(bytes: Vec<u8>) -> Self {
         // TODO:2.5 research how to do this correctly, safely, and efficiently.
         // TODO:2.5 use TryFrom so we can return error
@@ -269,14 +261,14 @@ impl From<Vec<u8>> for RaftLogEntry {
             | (bytes[6] as u64) << 5 * 8
             | (bytes[7] as u64) << 6 * 8
             | (bytes[8] as u64) << 7 * 8;
-        RaftLogEntry {
+        LogEntry {
             term: Term::new(term),
             data: bytes[9..].to_vec(),
         }
     }
 }
 
-impl Into<Vec<u8>> for RaftLogEntry {
+impl Into<Vec<u8>> for LogEntry {
     fn into(self) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::with_capacity(1 + 8 + self.data.len());
 

@@ -76,7 +76,7 @@ mod replica;
 mod replica_api;
 mod timers;
 
-pub use commit_log::RaftLogEntry;
+pub use commit_log::LogEntry;
 pub use election::ElectionStateChangeListener;
 pub use election::ElectionStateSnapshot;
 pub use local_state::PersistentLocalState;
@@ -89,5 +89,5 @@ pub use replica::ReplicaConfig;
 pub use replica_api::*;
 
 pub(crate) use local_state::Term;
-pub(crate) use peers::ReplicaBlob;
 pub(crate) use peers::ReplicaId;
+pub(crate) use peers::ReplicaInfoBlob;

@@ -3,7 +3,7 @@ use crate::grpc::{ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestV
 use tonic::transport::{Channel, Endpoint, Uri};
 
 #[derive(Clone)]
-pub struct RaftClient {
+pub struct PeerRpcClient {
     logger: slog::Logger,
     endpoint: Endpoint,
     connection: Conn,
@@ -17,12 +17,12 @@ enum Conn {
     Disconnected,
 }
 
-impl RaftClient {
+impl PeerRpcClient {
     pub async fn new(logger: slog::Logger, uri: Uri) -> Self {
         let endpoint = Endpoint::from(uri);
         let connection = Self::try_connect(&logger, &endpoint).await;
 
-        RaftClient {
+        PeerRpcClient {
             logger,
             endpoint,
             connection,

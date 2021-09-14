@@ -1,5 +1,3 @@
-#![feature(assert_matches)]
-
 use bytes::Bytes;
 use chrono::Utc;
 use raft;
@@ -135,15 +133,12 @@ async fn graceful_shutdown() {
 
     // Assert termination and no panics
     assert_event_bus_closed(Duration::from_secs(3), event_listener).await;
-    assert_matches!(
-        tokio::time::timeout(Duration::from_secs(3), commit_stream.next_entry()).await,
-        Ok(None),
-        "commit_stream did not exit correctly"
-    );
+    let result = tokio::time::timeout(Duration::from_secs(3), commit_stream.next_entry()).await;
+    assert!(matches!(result, Ok(None)), "commit_stream did not exit correctly");
     // TODO:2 assert that host is not listening on port anymore.
 }
 
-async fn assert_event_bus_closed(timeout: Duration, mut event_listener: raft::EventListener) {
+async fn assert_event_bus_closed(timeout: Duration, mut event_listener: raft::RaftEventListener) {
     let deadline = Instant::now() + timeout;
     loop {
         let event = tokio::time::timeout_at(deadline, event_listener.next_event())
@@ -169,8 +164,8 @@ impl TestUtilClusterCreator {
         let mut clients = HashMap::with_capacity(self.num_members);
         for i in 0..self.num_members {
             let client_config = Self::raft_config(i, self.num_members, self.port_base, self.heartbeat_duration);
-            let client_id = client_config.cluster_info.my_replica_id.clone();
-            let client = raft::create_raft_client(client_config).await.unwrap();
+            let client_id = client_config.my_replica_id.clone();
+            let client = raft::try_create_raft_client(client_config).await.unwrap();
             clients.insert(client_id, client);
         }
 
@@ -195,10 +190,8 @@ impl TestUtilClusterCreator {
         raft::RaftClientConfig {
             commit_log_directory: "/tmp/".to_string(),
             info_logger,
-            cluster_info: raft::ClusterInfo {
-                my_replica_id: Self::repl_id(id),
-                cluster_members,
-            },
+            my_replica_id: Self::repl_id(id),
+            cluster_members,
             options: raft::RaftOptions {
                 leader_heartbeat_duration: Some(heartbeat_duration),
                 follower_min_timeout: Some(heartbeat_duration * 3),
@@ -208,12 +201,12 @@ impl TestUtilClusterCreator {
         }
     }
 
-    fn member_info(port_base: u16, id: usize) -> raft::MemberInfo {
-        raft::MemberInfo {
+    fn member_info(port_base: u16, id: usize) -> raft::RaftMemberInfo {
+        raft::RaftMemberInfo {
             replica_id: Self::repl_id(id),
             ip_addr: Ipv4Addr::from([127, 0, 0, 1]),
-            raft_rpc_port: port_base + id as u16,
-            peer_redirect_info_blob: raft::MemberInfoBlob::new(9200 + id as u128),
+            raft_internal_rpc_port: port_base + id as u16,
+            peer_redirect_info_blob: raft::RaftMemberInfoBlob::new(9200 + id as u128),
         }
     }
 
@@ -257,10 +250,10 @@ impl TestUtilCluster {
                 .expect("Expected election event bus to be alive");
 
             match event {
-                raft::Event::Election(raft::ElectionEvent::Leader) => return client_id.to_string(),
-                raft::Event::Election(raft::ElectionEvent::Follower(leader)) => return leader.replica_id,
-                raft::Event::Election(raft::ElectionEvent::Candidate) => { /* Continue */ }
-                raft::Event::Election(raft::ElectionEvent::FollowerNoLeader) => { /* Continue */ }
+                raft::RaftEvent::Election(raft::RaftElectionState::Leader) => return client_id.to_string(),
+                raft::RaftEvent::Election(raft::RaftElectionState::Follower(leader)) => return leader.replica_id,
+                raft::RaftEvent::Election(raft::RaftElectionState::Candidate) => { /* Continue */ }
+                raft::RaftEvent::Election(raft::RaftElectionState::FollowerNoLeader) => { /* Continue */ }
             }
         }
     }

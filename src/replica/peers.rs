@@ -1,4 +1,4 @@
-use crate::replica::peer_client::RaftClient;
+use crate::replica::peer_client::PeerRpcClient;
 use std::collections::hash_map::Values;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -28,11 +28,11 @@ impl fmt::Debug for ReplicaId {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct ReplicaBlob(u128);
+pub struct ReplicaInfoBlob(u128);
 
-impl ReplicaBlob {
+impl ReplicaInfoBlob {
     pub fn new(blob: u128) -> Self {
-        ReplicaBlob(blob)
+        ReplicaInfoBlob(blob)
     }
 
     pub fn into_inner(self) -> u128 {
@@ -46,11 +46,11 @@ pub struct ReplicaMetadata {
     id: ReplicaId,
     ip: Ipv4Addr,
     port: u16,
-    blob: ReplicaBlob,
+    blob: ReplicaInfoBlob,
 }
 
 impl ReplicaMetadata {
-    pub fn new(replica_id: ReplicaId, ip_addr: Ipv4Addr, port: u16, blob: ReplicaBlob) -> Self {
+    pub fn new(replica_id: ReplicaId, ip_addr: Ipv4Addr, port: u16, blob: ReplicaInfoBlob) -> Self {
         ReplicaMetadata {
             id: replica_id,
             ip: ip_addr,
@@ -67,7 +67,7 @@ impl ReplicaMetadata {
         self.ip
     }
 
-    pub fn info_blob(&self) -> ReplicaBlob {
+    pub fn info_blob(&self) -> ReplicaInfoBlob {
         self.blob
     }
 }
@@ -76,7 +76,7 @@ impl ReplicaMetadata {
 #[derive(Clone)]
 pub struct Peer {
     pub metadata: ReplicaMetadata,
-    pub client: RaftClient,
+    pub client: PeerRpcClient,
 }
 
 /// ClusterTracker is the group of replicas participating in a single instance of raft together.
@@ -125,7 +125,7 @@ impl ClusterTracker {
             "RemoteIpAddr" => format!("{}:{}", peer_md.ip, peer_md.port),
         ));
         let uri = Self::make_uri(peer_md.ip, peer_md.port)?;
-        let client = RaftClient::new(peer_client_logger, uri).await;
+        let client = PeerRpcClient::new(peer_client_logger, uri).await;
         Ok(Peer {
             metadata: peer_md,
             client,

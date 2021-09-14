@@ -1,4 +1,3 @@
-use crate::api::factory::ClientCreationError;
 use std::convert::TryFrom;
 use tokio::time::Duration;
 
@@ -18,21 +17,15 @@ pub(super) struct RaftOptionsValidated {
 }
 
 impl RaftOptionsValidated {
-    fn validate(&self) -> Result<(), ClientCreationError> {
+    fn validate(&self) -> Result<(), &'static str> {
         if self.leader_heartbeat_duration >= self.follower_min_timeout {
-            return Err(ClientCreationError::IllegalClientOptions(
-                "Follower minimum timeout must be greater than leader's heartbeat".to_string(),
-            ));
+            return Err("Follower minimum timeout must be greater than leader's heartbeat");
         }
         if self.follower_min_timeout >= self.follower_max_timeout {
-            return Err(ClientCreationError::IllegalClientOptions(
-                "Follower minimum timeout must be less than maximum timeout".to_string(),
-            ));
+            return Err("Follower minimum timeout must be less than maximum timeout");
         }
         if self.leader_append_entries_timeout >= self.follower_min_timeout {
-            return Err(ClientCreationError::IllegalClientOptions(
-                "Leader's AppendEntries RPC timeout must be less than the follower's heartbeat timeout".to_string(),
-            ));
+            return Err("Leader's AppendEntries RPC timeout must be less than the follower's heartbeat timeout");
         }
 
         Ok(())
@@ -40,7 +33,7 @@ impl RaftOptionsValidated {
 }
 
 impl TryFrom<RaftOptions> for RaftOptionsValidated {
-    type Error = ClientCreationError;
+    type Error = &'static str;
 
     fn try_from(options: RaftOptions) -> Result<Self, Self::Error> {
         let values = RaftOptionsValidated {

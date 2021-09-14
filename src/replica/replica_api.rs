@@ -1,6 +1,6 @@
 use crate::commitlog::Index;
 use crate::replica::local_state::Term;
-use crate::replica::peers::{ReplicaBlob, ReplicaId};
+use crate::replica::peers::{ReplicaId, ReplicaInfoBlob};
 use bytes::Bytes;
 use std::io;
 use std::net::Ipv4Addr;
@@ -38,7 +38,7 @@ pub enum EnqueueForReplicationError {
 pub struct LeaderRedirectInfo {
     pub replica_id: ReplicaId,
     pub ip_addr: Ipv4Addr,
-    pub replica_blob: ReplicaBlob,
+    pub replica_blob: ReplicaInfoBlob,
 }
 
 #[derive(Debug)]

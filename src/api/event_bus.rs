@@ -1,4 +1,4 @@
-use crate::api::LeaderInfo;
+use crate::api::types::RaftLeaderInfo;
 use crate::replica;
 
 // This is a really lazy event bus style just to expose *any* API to the consumer. I will probably
@@ -7,50 +7,52 @@ use crate::replica;
 
 /// An event that happened, as observed by the local raft replica.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Event {
+pub enum RaftEvent {
     /// An event of leader election or timeout. Consuming this event type is subtle. It doesn't queue
     /// intermediate events. If there are multiple events between when application awaits the next event,
     /// those events will be clobbered into only the most recent event.
-    Election(ElectionEvent),
+    Election(RaftElectionState),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ElectionEvent {
+pub enum RaftElectionState {
     Leader,
     Candidate,
-    Follower(LeaderInfo),
+    Follower(RaftLeaderInfo),
     FollowerNoLeader,
 }
 
-pub struct EventListener {
+pub struct RaftEventListener {
     election_state_change_listener: replica::ElectionStateChangeListener,
 }
 
-impl EventListener {
+impl RaftEventListener {
     pub(crate) fn new(election_state_change_listener: replica::ElectionStateChangeListener) -> Self {
-        EventListener {
+        Self {
             election_state_change_listener,
         }
     }
 
     /// `next_event()` returns the next event that this local raft replica observes.
-    pub async fn next_event(&mut self) -> Option<Event> {
+    pub async fn next_event(&mut self) -> Option<RaftEvent> {
         self.election_state_change_listener
             .next()
             .await
-            .map(|election_state| Event::Election(ElectionEvent::from(election_state)))
+            .map(|election_state| RaftEvent::Election(RaftElectionState::from(election_state)))
     }
 }
 
 // ------- Conversions --------
 
-impl From<replica::ElectionStateSnapshot> for ElectionEvent {
+impl From<replica::ElectionStateSnapshot> for RaftElectionState {
     fn from(election_state: replica::ElectionStateSnapshot) -> Self {
         match election_state {
-            replica::ElectionStateSnapshot::Leader => ElectionEvent::Leader,
-            replica::ElectionStateSnapshot::Candidate => ElectionEvent::Candidate,
-            replica::ElectionStateSnapshot::Follower(leader) => ElectionEvent::Follower(LeaderInfo::from(leader)),
-            replica::ElectionStateSnapshot::FollowerNoLeader => ElectionEvent::FollowerNoLeader,
+            replica::ElectionStateSnapshot::Leader => RaftElectionState::Leader,
+            replica::ElectionStateSnapshot::Candidate => RaftElectionState::Candidate,
+            replica::ElectionStateSnapshot::Follower(leader) => {
+                RaftElectionState::Follower(RaftLeaderInfo::from(leader))
+            }
+            replica::ElectionStateSnapshot::FollowerNoLeader => RaftElectionState::FollowerNoLeader,
         }
     }
 }

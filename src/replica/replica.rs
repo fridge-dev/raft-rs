@@ -5,12 +5,12 @@ use crate::grpc::{
     proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
     ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq,
 };
-use crate::replica::commit_log::{RaftLog, RaftLogEntry};
+use crate::replica::commit_log::{LogEntry, WriteAheadLog};
 use crate::replica::election::{
     ElectionConfig, ElectionState, ElectionStateChangeListener, ElectionStateSnapshot, PeerStateUpdate,
 };
 use crate::replica::local_state::{PersistentLocalState, Term};
-use crate::replica::peer_client::RaftClient;
+use crate::replica::peer_client::PeerRpcClient;
 use crate::replica::peers::{ClusterTracker, Peer, ReplicaId};
 use crate::replica::replica_api::{
     AppendEntriesError, AppendEntriesInput, AppendEntriesOutput, AppendEntriesReplyFromPeer,
@@ -29,14 +29,14 @@ use tonic::Status;
 
 pub struct ReplicaConfig<L, S>
 where
-    L: Log<RaftLogEntry>,
+    L: Log<LogEntry>,
     S: PersistentLocalState,
 {
     pub logger: slog::Logger,
     pub cluster_tracker: ClusterTracker,
     pub commit_log: L,
     pub local_state: S,
-    pub commit_stream_publisher: api::CommitStreamPublisher,
+    pub commit_stream_publisher: api::RaftCommitStreamPublisher,
     pub server_shutdown_handle: server::RpcServerShutdownHandle,
     pub actor_client: WeakActorClient,
     pub leader_heartbeat_duration: Duration,
@@ -47,7 +47,7 @@ where
 
 pub struct Replica<L, S>
 where
-    L: Log<RaftLogEntry>,
+    L: Log<LogEntry>,
     S: PersistentLocalState,
 {
     logger: slog::Logger,
@@ -55,7 +55,7 @@ where
     cluster_tracker: ClusterTracker,
     local_state: S,
     election_state: ElectionState,
-    commit_log: RaftLog<L>,
+    commit_log: WriteAheadLog<L>,
     actor_client: WeakActorClient,
     append_entries_timeout: Duration,
     _server_shutdown: server::RpcServerShutdownHandle,
@@ -65,7 +65,7 @@ where
 // TODO:1 Implement log compaction.
 impl<L, S> Replica<L, S>
 where
-    L: Log<RaftLogEntry> + 'static,
+    L: Log<LogEntry> + 'static,
     S: PersistentLocalState + 'static,
 {
     pub fn new(config: ReplicaConfig<L, S>) -> (Self, ElectionStateChangeListener) {
@@ -79,7 +79,7 @@ where
             },
             config.actor_client.clone(),
         );
-        let commit_log = RaftLog::new(config.logger.clone(), config.commit_log, config.commit_stream_publisher);
+        let commit_log = WriteAheadLog::new(config.logger.clone(), config.commit_log, config.commit_stream_publisher);
 
         let replica = Replica {
             logger: config.logger,
@@ -119,7 +119,7 @@ where
         // > If command received from client: append entry to local log,
         // > respond after entry applied to state machine (§5.3)
         let term = self.local_state.current_term();
-        let new_entry = RaftLogEntry {
+        let new_entry = LogEntry {
             term,
             data: input.data.to_vec(),
         };
@@ -406,7 +406,7 @@ where
             // 4. (append)
             let appended_index = self
                 .commit_log
-                .append(RaftLogEntry {
+                .append(LogEntry {
                     term: new_entry.term,
                     data: new_entry.data.to_vec(),
                 })
@@ -441,7 +441,7 @@ where
                     my_commit_index,
                     input.leader_id,
                 );
-            },
+            }
             (Some(leader_commit_index), None) => {
                 let new_commit_index = match last_appended_index {
                     Some(my_last_index) => cmp::min(leader_commit_index, my_last_index),
@@ -706,7 +706,7 @@ where
 
     async fn call_peer_append_entries(
         logger: slog::Logger,
-        mut peer_client: RaftClient,
+        mut peer_client: PeerRpcClient,
         rpc_request: ProtoAppendEntriesReq,
         rpc_timeout: Duration,
         callback: WeakActorClient,
@@ -810,7 +810,7 @@ where
 
     async fn call_peer_request_vote(
         logger: slog::Logger,
-        mut peer_client: RaftClient,
+        mut peer_client: PeerRpcClient,
         peer_id: ReplicaId,
         rpc_request: ProtoRequestVoteReq,
         callback: WeakActorClient,
@@ -867,20 +867,20 @@ enum HandleLeaderTimerError {
 mod leader_timer_handler {
     use crate::commitlog::{Index, Log};
     use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
-    use crate::replica::commit_log::RaftLog;
+    use crate::replica::commit_log::WriteAheadLog;
     use crate::replica::election::PeerState;
     use crate::replica::replica::HandleLeaderTimerError;
-    use crate::replica::{AppendEntriesReplyFromPeerDescriptor, RaftLogEntry, ReplicaId, Term};
+    use crate::replica::{AppendEntriesReplyFromPeerDescriptor, LogEntry, ReplicaId, Term};
 
     pub(super) fn new_append_entries_request<L>(
         current_term: Term,
         my_id: ReplicaId,
         peer_id: ReplicaId,
         peer_state: &mut PeerState,
-        commit_log: &RaftLog<L>,
+        commit_log: &WriteAheadLog<L>,
     ) -> Result<(ProtoAppendEntriesReq, AppendEntriesReplyFromPeerDescriptor), HandleLeaderTimerError>
     where
-        L: Log<RaftLogEntry>,
+        L: Log<LogEntry>,
     {
         // Simplicity vs throughput tradeoff. We're just going to allow 1 outstanding request per
         // peer; no pipelining. This should not limit throughput too badly however, as we will still
@@ -933,7 +933,7 @@ mod leader_timer_handler {
         my_id: ReplicaId,
         previous_log_entry_metadata: Option<(Term, Index)>,
         commit_index: Option<Index>,
-        new_entries: Vec<RaftLogEntry>,
+        new_entries: Vec<LogEntry>,
     ) -> ProtoAppendEntriesReq {
         let commit_index_u64 = match commit_index {
             None => 0,
@@ -967,9 +967,9 @@ mod leader_timer_handler {
 #[cfg(test)]
 mod tests {
     use crate::commitlog::{InMemoryLog, Index};
-    use crate::replica::{RaftLogEntry, Replica, VolatileLocalState};
+    use crate::replica::{LogEntry, Replica, VolatileLocalState};
 
-    type Repl = Replica<InMemoryLog<RaftLogEntry>, VolatileLocalState>;
+    type Repl = Replica<InMemoryLog<LogEntry>, VolatileLocalState>;
 
     fn opt_index(v: u64) -> Option<Index> {
         if v == 0 {
