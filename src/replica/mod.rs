@@ -67,27 +67,26 @@
 //! * Get(key)
 //! * Put(key, value, options...)
 //! * Delete(key, options...)
-mod commit_log;
 mod election;
 mod local_state;
 mod peer_client;
 mod peers;
 mod replica;
 mod replica_api;
-mod timers;
+mod write_ahead_log;
 
-pub use commit_log::LogEntry;
-pub use election::ElectionStateChangeListener;
-pub use election::ElectionStateSnapshot;
-pub use local_state::PersistentLocalState;
-pub use local_state::VolatileLocalState;
-pub use peers::ClusterTracker;
-pub use peers::InvalidCluster;
-pub use peers::ReplicaMetadata;
-pub use replica::Replica;
-pub use replica::ReplicaConfig;
-pub use replica_api::*;
-
+pub(crate) use election::ElectionStateChangeListener;
+pub(crate) use election::ElectionStateSnapshot;
+pub(crate) use local_state::PersistentLocalState;
 pub(crate) use local_state::Term;
 pub(crate) use peers::ReplicaId;
 pub(crate) use peers::ReplicaInfoBlob;
+pub(crate) use peers::ReplicaMetadata;
+pub(crate) use replica::Replica;
+pub(crate) use replica::ReplicaConfig;
+pub(crate) use replica_api::*;
+pub(crate) use write_ahead_log::LogEntry;
+
+// TODO:1 refactor replica wiring and then remove these re-exports
+pub(crate) use peers::ClusterTracker;
+pub(crate) use local_state::VolatileLocalState;

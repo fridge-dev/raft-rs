@@ -29,6 +29,12 @@ pub use api::ReplicatedLog;
 // Learning 2: All `mod` statements, anywhere, should not be `pub`. Only export `pub` via individual
 //             use statements.
 //
+// Learning 3: While private `mod` statements and `pub` structs/methods/traits keep public export
+//             controlled in a single place (the mod files), it is still beneficial for code
+//             maintenance purposes to use the least necessary publicity when declaring a struct.
+//             E.g. Write `pub(super) struct MyStruct` if your struct is intended to only be used
+//             within the parent mod.
+//
 // This keeps the `crate::{root_mod}` root_mod only responsible for exporting types to the rest of
 // crate, and allows me to organize my root_mod impl however I want. This is because I really like
 // go's style of packaging/visibility and I'm going for something similar here.

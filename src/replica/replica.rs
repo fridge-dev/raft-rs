@@ -5,7 +5,7 @@ use crate::grpc::{
     proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
     ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq,
 };
-use crate::replica::commit_log::{LogEntry, WriteAheadLog};
+use crate::replica::write_ahead_log::{LogEntry, WriteAheadLog};
 use crate::replica::election::{
     ElectionConfig, ElectionState, ElectionStateChangeListener, ElectionStateSnapshot, PeerStateUpdate,
 };
@@ -27,7 +27,7 @@ use tokio::time::error::Elapsed;
 use tokio::time::Duration;
 use tonic::Status;
 
-pub struct ReplicaConfig<L, S>
+pub(crate) struct ReplicaConfig<L, S>
 where
     L: Log<LogEntry>,
     S: PersistentLocalState,
@@ -45,7 +45,7 @@ where
     pub append_entries_timeout: Duration,
 }
 
-pub struct Replica<L, S>
+pub(crate) struct Replica<L, S>
 where
     L: Log<LogEntry>,
     S: PersistentLocalState,
@@ -55,7 +55,7 @@ where
     cluster_tracker: ClusterTracker,
     local_state: S,
     election_state: ElectionState,
-    commit_log: WriteAheadLog<L>,
+    write_ahead_log: WriteAheadLog<L>,
     actor_client: WeakActorClient,
     append_entries_timeout: Duration,
     _server_shutdown: server::RpcServerShutdownHandle,
@@ -87,7 +87,7 @@ where
             cluster_tracker: config.cluster_tracker,
             local_state: config.local_state,
             election_state,
-            commit_log,
+            write_ahead_log: commit_log,
             actor_client: config.actor_client,
             append_entries_timeout: config.append_entries_timeout,
             _server_shutdown: config.server_shutdown_handle,
@@ -96,7 +96,7 @@ where
         (replica, election_state_change_listener)
     }
 
-    pub fn handle_enqueue_for_replication(
+    pub(crate) fn handle_enqueue_for_replication(
         &mut self,
         input: EnqueueForReplicationInput,
     ) -> Result<EnqueueForReplicationOutput, EnqueueForReplicationError> {
@@ -124,7 +124,7 @@ where
             data: input.data.to_vec(),
         };
         let appended_index = self
-            .commit_log
+            .write_ahead_log
             .append(new_entry)
             .map_err(|e| EnqueueForReplicationError::LocalIoError(e))?;
 
@@ -136,7 +136,7 @@ where
         })
     }
 
-    pub fn server_handle_request_vote(
+    pub(crate) fn server_handle_request_vote(
         &mut self,
         input: RequestVoteInput,
     ) -> Result<RequestVoteOutput, RequestVoteError> {
@@ -225,7 +225,7 @@ where
         // > the log with the later term is more up-to-date. If the logs
         // > end with the same term, then whichever log is longer is
         // > more up-to-date.
-        match (self.commit_log.latest_entry(), candidate_last_entry) {
+        match (self.write_ahead_log.latest_entry(), candidate_last_entry) {
             (None, None) => true,
             (Some(_), None) => false,
             (None, Some(_)) => true,
@@ -244,7 +244,7 @@ where
         }
     }
 
-    pub fn handle_request_vote_reply_from_peer(&mut self, reply: RequestVoteReplyFromPeer) {
+    pub(crate) fn handle_request_vote_reply_from_peer(&mut self, reply: RequestVoteReplyFromPeer) {
         let current_term = self.local_state.current_term();
         if current_term != reply.term {
             slog::info!(
@@ -284,7 +284,7 @@ where
                     self.election_state.transition_to_leader(
                         reply.term,
                         self.cluster_tracker.peer_ids(),
-                        self.commit_log.latest_entry().map(|(_, index)| index),
+                        self.write_ahead_log.latest_entry().map(|(_, index)| index),
                     );
                 }
             }
@@ -323,7 +323,7 @@ where
         (num_voting_replicas / 2) + 1
     }
 
-    pub fn server_handle_append_entries(
+    pub(crate) fn server_handle_append_entries(
         &mut self,
         input: AppendEntriesInput,
     ) -> Result<AppendEntriesOutput, AppendEntriesError> {
@@ -362,7 +362,7 @@ where
         // 2. Reply false if [my] log doesn't contain an entry at [leader's]
         // prevLogIndex whose term matches [leader's] prevLogTerm (§5.3)
         if let Some((leader_prev_entry_term, leader_prev_entry_index)) = input.leader_previous_log_entry {
-            match self.commit_log.read(leader_prev_entry_index) {
+            match self.write_ahead_log.read(leader_prev_entry_index) {
                 Ok(Some(my_previous_log_entry)) => {
                     if my_previous_log_entry.term != leader_prev_entry_term {
                         return Err(AppendEntriesError::ServerMissingPreviousLogEntry);
@@ -386,7 +386,7 @@ where
             // TODO:2.5 optimize read to not happen if we know we've truncated log in a previous
             //          iteration, or if we're missing an entry from a previous iteration.
             let opt_existing_entry = self
-                .commit_log
+                .write_ahead_log
                 .read(next_entry_index)
                 .map_err(|e| AppendEntriesError::ServerIoError(e))?;
 
@@ -397,7 +397,7 @@ where
                     continue;
                 } else {
                     // 3. (delete)
-                    self.commit_log
+                    self.write_ahead_log
                         .truncate(next_entry_index)
                         .map_err(|e| AppendEntriesError::ServerIoError(e))?;
                 }
@@ -405,7 +405,7 @@ where
 
             // 4. (append)
             let appended_index = self
-                .commit_log
+                .write_ahead_log
                 .append(LogEntry {
                     term: new_entry.term,
                     data: new_entry.data.to_vec(),
@@ -430,7 +430,7 @@ where
 
         // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
         // TODO:1 Validate what "index of last new entry" means when new_entries is empty
-        match (input.leader_commit_index, self.commit_log.commit_index()) {
+        match (input.leader_commit_index, self.write_ahead_log.commit_index()) {
             (None, None) => { /* Nothing to do */ }
             (None, Some(my_commit_index)) => {
                 // This is remotely possible if leader with same log as us, but didn't observe
@@ -448,7 +448,7 @@ where
                     // TODO:1 see above, I think this is wrong, it should be none?
                     None => leader_commit_index,
                 };
-                self.commit_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
+                self.write_ahead_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
             }
             (Some(leader_commit_index), Some(my_commit_index)) => {
                 if leader_commit_index > my_commit_index {
@@ -456,7 +456,7 @@ where
                         Some(my_last_index) => cmp::min(leader_commit_index, my_last_index),
                         None => leader_commit_index,
                     };
-                    self.commit_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
+                    self.write_ahead_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
                 }
             }
         };
@@ -465,12 +465,12 @@ where
 
         // > If commitIndex > lastApplied: increment lastApplied, apply
         // > log[lastApplied] to state machine (§5.3)
-        self.commit_log.apply_all_committed_entries();
+        self.write_ahead_log.apply_all_committed_entries();
 
         return output;
     }
 
-    pub fn handle_append_entries_reply_from_peer(&mut self, reply: AppendEntriesReplyFromPeer) {
+    pub(crate) fn handle_append_entries_reply_from_peer(&mut self, reply: AppendEntriesReplyFromPeer) {
         let logger = self
             .logger
             .new(slog::o!("Peer" => format!("{:?}", reply.descriptor.peer_id), "SeqNo" => reply.descriptor.seq_no));
@@ -549,10 +549,10 @@ where
                     .collect();
                 if let Some(tentative_new_commit_index) = Self::get_cluster_commit_index(peers_matched_index) {
                     match self
-                        .commit_log
+                        .write_ahead_log
                         .ratchet_fwd_commit_index_if_valid(tentative_new_commit_index, self.local_state.current_term())
                     {
-                        Ok(_) => self.commit_log.apply_all_committed_entries(),
+                        Ok(_) => self.write_ahead_log.apply_all_committed_entries(),
                         Err(ioe) => slog::warn!(
                             logger,
                             "IO failure while confirming new commit index {:?}: {:?}",
@@ -566,7 +566,7 @@ where
                 // > If last log index ≥ nextIndex for a follower: send
                 // > AppendEntries RPC with log entries starting at nextIndex
                 let mut do_immediate_call = false;
-                if let Some(last_log_index) = self.commit_log.latest_entry().map(|(_, v)| v) {
+                if let Some(last_log_index) = self.write_ahead_log.latest_entry().map(|(_, v)| v) {
                     if last_log_index >= next_index {
                         do_immediate_call = true;
                     }
@@ -610,7 +610,7 @@ where
         peers_matched_indexes.remove(quorum_idx)
     }
 
-    pub fn handler_leader_timer(&mut self, input: LeaderTimerTick) {
+    pub(crate) fn handler_leader_timer(&mut self, input: LeaderTimerTick) {
         let current_term = self.local_state.current_term();
         if current_term != input.term {
             slog::warn!(
@@ -683,7 +683,7 @@ where
                     self.my_replica_id.clone(),
                     peer.metadata.replica_id().clone(),
                     peer_state,
-                    &self.commit_log,
+                    &self.write_ahead_log,
                 )?;
 
                 // TODO:2.5 add RequestId to remote call
@@ -771,7 +771,7 @@ where
         }
     }
 
-    pub fn handle_follower_timeout(&mut self) {
+    pub(crate) fn handle_follower_timeout(&mut self) {
         // Write-ahead log style: Vote for self on local state before transitioning to candidate.
         let new_term = self.local_state.increment_term_and_vote_for_self();
         self.election_state.transition_to_candidate_and_vote_for_self();
@@ -795,7 +795,7 @@ where
     }
 
     fn new_request_vote_request(&self, term: Term) -> ProtoRequestVoteReq {
-        let (last_log_entry_term, last_log_entry_index) = match self.commit_log.latest_entry() {
+        let (last_log_entry_term, last_log_entry_index) = match self.write_ahead_log.latest_entry() {
             None => (0, 0),
             Some((term, index)) => (term.as_u64(), index.as_u64()),
         };
@@ -867,10 +867,10 @@ enum HandleLeaderTimerError {
 mod leader_timer_handler {
     use crate::commitlog::{Index, Log};
     use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
-    use crate::replica::commit_log::WriteAheadLog;
+    use crate::replica::write_ahead_log::{WriteAheadLog, LogEntry};
     use crate::replica::election::PeerState;
     use crate::replica::replica::HandleLeaderTimerError;
-    use crate::replica::{AppendEntriesReplyFromPeerDescriptor, LogEntry, ReplicaId, Term};
+    use crate::replica::{AppendEntriesReplyFromPeerDescriptor, ReplicaId, Term};
 
     pub(super) fn new_append_entries_request<L>(
         current_term: Term,
@@ -966,8 +966,10 @@ mod leader_timer_handler {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::commitlog::{InMemoryLog, Index};
-    use crate::replica::{LogEntry, Replica, VolatileLocalState};
+    use crate::replica::write_ahead_log::LogEntry;
+    use crate::replica::local_state::VolatileLocalState;
 
     type Repl = Replica<InMemoryLog<LogEntry>, VolatileLocalState>;
 
@@ -1031,5 +1033,58 @@ mod tests {
         run(7, vec![9, 8, 0, 0, 7]);
     }
 
-    // TODO:1 UT `server_handle_append_entries()`
+    // fn create_root_logger_for_stdout(replica_id: String) -> slog::Logger {
+    //     let decorator = slog_term::TermDecorator::new().build();
+    //     let drain = slog_term::FullFormat::new(decorator).use_file_location().build().fuse();
+    //     let drain = slog_async::Async::new(drain).build().fuse();
+    //
+    //     slog::Logger::root(drain, slog::o!("ReplicaId" => replica_id))
+    // }
+    //
+    // struct ReplicaTestHandle {
+    //     pub replica: Replica<InMemoryLog<LogEntry>, VolatileLocalState>,
+    //     pub election_state_change_listener: ElectionStateChangeListener,
+    //     pub commit_stream: RaftCommitStream,
+    // }
+    //
+    // // TODO:0 WIP
+    // #[test]
+    // fn server_handle_append_entries() {
+    //     let my_replica_id_str = String::from("repl-id-me");
+    //     let my_replica_id = ReplicaId::new(&my_replica_id_str);
+    //     let logger = create_root_logger_for_stdout(my_replica_id_str.clone());
+    //
+    //     let cluster_tracker = ClusterTracker::create_valid_cluster(
+    //         logger.clone(),
+    //         ReplicaMetadata::new(my_replica_id.clone(), Ipv4Addr::from(0x12345678), 0xABCD, ReplicaInfoBlob::new(0x12345678ABCD)),
+    //         vec![
+    //             ReplicaMetadata::new(ReplicaId::new("repl-id-peer1"), Ipv4Addr::from(0x1), 0x1, ReplicaInfoBlob::new(0x1)),
+    //             ReplicaMetadata::new(ReplicaId::new("repl-id-peer2"), Ipv4Addr::from(0x2), 0x2, ReplicaInfoBlob::new(0x2)),
+    //         ],
+    //     ).await.unwrap();
+    //
+    //     let commit_log = InMemoryLog::create(logger.clone()).unwrap();
+    //     let local_state = VolatileLocalState::new(my_replica_id.clone());
+    //
+    //     let (commit_stream_publisher, commit_stream) = api::create_commit_stream();
+    //     let (actor_client, actor_queue_rx) = ActorClient::new(1);
+    //
+    //     let options = RaftOptionsValidated::try_from(config.options)?;
+    //
+    //     let (server_shutdown_handle, server_shutdown_signal) = server::shutdown_signal();
+    //
+    //     let (replica, election_state_change_listener) = Replica::new(ReplicaConfig {
+    //         logger: logger.clone(),
+    //         cluster_tracker,
+    //         commit_log,
+    //         local_state,
+    //         commit_stream_publisher,
+    //         server_shutdown_handle,
+    //         actor_client: actor_client.weak(),
+    //         leader_heartbeat_duration: options.leader_heartbeat_duration,
+    //         follower_min_timeout: options.follower_min_timeout,
+    //         follower_max_timeout: options.follower_max_timeout,
+    //         append_entries_timeout: options.leader_append_entries_timeout,
+    //     });
+    // }
 }

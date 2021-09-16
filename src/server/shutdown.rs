@@ -3,17 +3,17 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::oneshot;
 
-pub fn shutdown_signal() -> (RpcServerShutdownHandle, RpcServerShutdownSignal) {
+pub(crate) fn shutdown_signal() -> (RpcServerShutdownHandle, RpcServerShutdownSignal) {
     let (tx, rx) = oneshot::channel();
 
     (RpcServerShutdownHandle { _tx: tx }, RpcServerShutdownSignal { rx })
 }
 
-pub struct RpcServerShutdownHandle {
+pub(crate) struct RpcServerShutdownHandle {
     _tx: oneshot::Sender<()>,
 }
 
-pub struct RpcServerShutdownSignal {
+pub(crate) struct RpcServerShutdownSignal {
     rx: oneshot::Receiver<()>,
 }
 

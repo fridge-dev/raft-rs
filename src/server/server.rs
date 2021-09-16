@@ -18,17 +18,17 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 /// RpcServer is the type that implements the Raft gRPC interface.
-pub struct RpcServer {
+pub(crate) struct RpcServer {
     logger: slog::Logger,
     local_replica: WeakActorClient,
 }
 
 impl RpcServer {
-    pub fn new(logger: slog::Logger, local_replica: WeakActorClient) -> Self {
+    pub(crate) fn new(logger: slog::Logger, local_replica: WeakActorClient) -> Self {
         RpcServer { logger, local_replica }
     }
 
-    pub async fn run(self, socket_addr: SocketAddr, shutdown_signal: RpcServerShutdownSignal) {
+    pub(crate) async fn run(self, socket_addr: SocketAddr, shutdown_signal: RpcServerShutdownSignal) {
         let logger = self.logger.clone();
         slog::info!(logger, "Listening on '{:?}'", socket_addr);
 

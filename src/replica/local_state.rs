@@ -3,18 +3,18 @@ use std::fmt;
 use std::sync::Arc;
 
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
-pub struct Term(u64);
+pub(crate) struct Term(u64);
 
 impl Term {
-    pub fn new(term: u64) -> Self {
+    pub(crate) fn new(term: u64) -> Self {
         Term(term)
     }
 
-    pub fn as_u64(&self) -> u64 {
+    pub(crate) fn as_u64(&self) -> u64 {
         self.0
     }
 
-    pub fn incr(&mut self) {
+    pub(crate) fn incr(&mut self) {
         self.0 += 1;
     }
 }
@@ -31,7 +31,7 @@ impl fmt::Debug for Term {
 ///
 /// Store methods should be implemented atomically via a CAS like operation. Similar to most CAS
 /// method signatures, the CAS store methods will return true if we have mutated state.
-pub trait PersistentLocalState {
+pub(crate) trait PersistentLocalState {
     /// Set current term to `new_term` atomically, iff it is larger than current term.
     ///
     /// CAS: Return true if we successfully mutated state.
@@ -53,14 +53,16 @@ pub trait PersistentLocalState {
 // Currently, this is not persistent. It's just in memory. But I'm focusing on raft algorithm more
 // so than integrating with disk correctly.
 // TODO:3 Persist local state to disk, not RAM.
-pub struct VolatileLocalState {
+// TODO:1 refactor replica wiring and then change to `pub(super)`
+pub(crate) struct VolatileLocalState {
     current_term: Term,
     voted_for_this_term: Option<Arc<ReplicaId>>,
     my_replica_id: Arc<ReplicaId>,
 }
 
 impl VolatileLocalState {
-    pub fn new(my_replica_id: ReplicaId) -> Self {
+    // TODO:1 refactor replica wiring and then change to `pub(super)`
+    pub(crate) fn new(my_replica_id: ReplicaId) -> Self {
         VolatileLocalState {
             current_term: Term::new(0),
             voted_for_this_term: None,

@@ -18,7 +18,7 @@ use std::io;
 ///
 /// A log entry's state has no global truth. Each replica will have their own local view of what
 /// state the log entry is in.
-pub struct WriteAheadLog<L>
+pub(super) struct WriteAheadLog<L>
 where
     L: commitlog::Log<LogEntry>,
 {
@@ -43,7 +43,7 @@ impl<L> WriteAheadLog<L>
 where
     L: commitlog::Log<LogEntry>,
 {
-    pub fn new(logger: slog::Logger, log: L, commit_stream: api::RaftCommitStreamPublisher) -> Self {
+    pub(super) fn new(logger: slog::Logger, log: L, commit_stream: api::RaftCommitStreamPublisher) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
         assert_eq!(
             log.next_index(),
@@ -61,11 +61,11 @@ where
         }
     }
 
-    pub fn latest_entry(&self) -> Option<(Term, Index)> {
+    pub(super) fn latest_entry(&self) -> Option<(Term, Index)> {
         self.latest_entry_metadata
     }
 
-    pub fn read(&self, index: Index) -> Result<Option<LogEntry>, io::Error> {
+    pub(super) fn read(&self, index: Index) -> Result<Option<LogEntry>, io::Error> {
         self.log.read(index)
     }
 
@@ -78,7 +78,7 @@ where
     }
 
     /// Remove anything starting at `index` and later.
-    pub fn truncate(&mut self, index: Index) -> Result<(), io::Error> {
+    pub(super) fn truncate(&mut self, index: Index) -> Result<(), io::Error> {
         let mut new_latest_entry_metadata = None;
         if let Some(new_latest_entry_index) = index.checked_minus(1) {
             new_latest_entry_metadata = self
@@ -94,7 +94,7 @@ where
         Ok(())
     }
 
-    pub fn append(&mut self, entry: LogEntry) -> Result<Index, io::Error> {
+    pub(super) fn append(&mut self, entry: LogEntry) -> Result<Index, io::Error> {
         let appended_term = entry.term;
         let appended_index = self.log.append(entry)?;
         // Only update state after log action completes.
@@ -103,11 +103,11 @@ where
         Ok(appended_index)
     }
 
-    pub fn commit_index(&self) -> Option<Index> {
+    pub(super) fn commit_index(&self) -> Option<Index> {
         self.commit_index
     }
 
-    pub fn ratchet_fwd_commit_index_if_valid(
+    pub(super) fn ratchet_fwd_commit_index_if_valid(
         &mut self,
         tentative_new_commit_index: Index,
         current_term: Term,
@@ -133,7 +133,7 @@ where
         Ok(())
     }
 
-    pub fn ratchet_fwd_commit_index_if_changed(&mut self, new_commit_index: Index) {
+    pub(super) fn ratchet_fwd_commit_index_if_changed(&mut self, new_commit_index: Index) {
         // Gracefully handle unchanged. Panic (later) if index is decreasing.
         if matches!(self.commit_index(), Some(ci) if ci == new_commit_index) {
             return;
@@ -169,7 +169,7 @@ where
     }
 
     /// apply_all_committed_entries applies all committed but unapplied entries in order.
-    pub fn apply_all_committed_entries(&mut self) {
+    pub(super) fn apply_all_committed_entries(&mut self) {
         if let Err(e) = self.try_apply_all_committed_entries() {
             // We've already persisted the log. Applying committed logs is not on critical
             // path. We can wait to retry next time.
@@ -237,7 +237,7 @@ where
 /// * Checksum is not needed, it's guaranteed by underlying commitlog.
 /// * Size/length of `Data` is not needed; the underlying commitlog will give us the correctly allocated array.
 #[derive(Clone)]
-pub struct LogEntry {
+pub(crate) struct LogEntry {
     pub term: Term,
     pub data: Vec<u8>,
 }

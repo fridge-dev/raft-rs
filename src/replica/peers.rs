@@ -9,14 +9,14 @@ use tonic::codegen::http::uri;
 /// ReplicaId is kind of like NodeId or ServerId. It is the ID of the entity participating in the
 /// replication cluster.
 #[derive(Clone, Hash, Eq, PartialEq)]
-pub struct ReplicaId(String);
+pub(crate) struct ReplicaId(String);
 
 impl ReplicaId {
-    pub fn new(replica_id: impl Into<String>) -> Self {
+    pub(crate) fn new(replica_id: impl Into<String>) -> Self {
         ReplicaId(replica_id.into())
     }
 
-    pub fn into_inner(self) -> String {
+    pub(crate) fn into_inner(self) -> String {
         self.0
     }
 }
@@ -28,21 +28,21 @@ impl fmt::Debug for ReplicaId {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct ReplicaInfoBlob(u128);
+pub(crate) struct ReplicaInfoBlob(u128);
 
 impl ReplicaInfoBlob {
-    pub fn new(blob: u128) -> Self {
+    pub(crate) fn new(blob: u128) -> Self {
         ReplicaInfoBlob(blob)
     }
 
-    pub fn into_inner(self) -> u128 {
+    pub(crate) fn into_inner(self) -> u128 {
         self.0
     }
 }
 
 /// ReplicaMetadata is identity/connection metadata describing a replica.
 #[derive(Clone)]
-pub struct ReplicaMetadata {
+pub(crate) struct ReplicaMetadata {
     id: ReplicaId,
     ip: Ipv4Addr,
     port: u16,
@@ -50,7 +50,7 @@ pub struct ReplicaMetadata {
 }
 
 impl ReplicaMetadata {
-    pub fn new(replica_id: ReplicaId, ip_addr: Ipv4Addr, port: u16, blob: ReplicaInfoBlob) -> Self {
+    pub(crate) fn new(replica_id: ReplicaId, ip_addr: Ipv4Addr, port: u16, blob: ReplicaInfoBlob) -> Self {
         ReplicaMetadata {
             id: replica_id,
             ip: ip_addr,
@@ -59,35 +59,37 @@ impl ReplicaMetadata {
         }
     }
 
-    pub fn replica_id(&self) -> &ReplicaId {
+    pub(super) fn replica_id(&self) -> &ReplicaId {
         &self.id
     }
 
-    pub fn ip_addr(&self) -> Ipv4Addr {
+    pub(super) fn ip_addr(&self) -> Ipv4Addr {
         self.ip
     }
 
-    pub fn info_blob(&self) -> ReplicaInfoBlob {
+    pub(super) fn info_blob(&self) -> ReplicaInfoBlob {
         self.blob
     }
 }
 
 /// Peer is a replica that is not me.
 #[derive(Clone)]
-pub struct Peer {
-    pub metadata: ReplicaMetadata,
-    pub client: PeerRpcClient,
+pub(super) struct Peer {
+    pub(super) metadata: ReplicaMetadata,
+    pub(super) client: PeerRpcClient,
 }
 
 /// ClusterTracker is the group of replicas participating in a single instance of raft together.
-pub struct ClusterTracker {
+// TODO:1 refactor replica wiring and then change to `pub(super)`
+pub(crate) struct ClusterTracker {
     my_replica_metadata: ReplicaMetadata,
     peers: HashMap<ReplicaId, Peer>,
 }
 
 // Associated factory functions
 impl ClusterTracker {
-    pub async fn create_valid_cluster(
+    // TODO:1 refactor replica wiring and then change to `pub(super)`
+    pub(crate) async fn create_valid_cluster(
         logger: slog::Logger,
         my_replica_metadata: ReplicaMetadata,
         peer_replica_metadata: Vec<ReplicaMetadata>,
@@ -144,42 +146,43 @@ impl ClusterTracker {
 
 // Methods
 impl ClusterTracker {
-    pub fn my_replica_id(&self) -> &ReplicaId {
+    pub(super) fn my_replica_id(&self) -> &ReplicaId {
         &self.my_replica_metadata.id
     }
 
-    pub fn contains_member(&self, id: &ReplicaId) -> bool {
+    pub(super) fn contains_member(&self, id: &ReplicaId) -> bool {
         self.peers.contains_key(id)
     }
 
     // Exposing HashMap type, but experimenting with this style.
-    pub fn iter_peers(&self) -> Values<'_, ReplicaId, Peer> {
+    pub(super) fn iter_peers(&self) -> Values<'_, ReplicaId, Peer> {
         self.peers.values()
     }
 
-    pub fn peer_ids(&self) -> HashSet<ReplicaId> {
+    pub(super) fn peer_ids(&self) -> HashSet<ReplicaId> {
         self.peers.keys().cloned().collect()
     }
 
-    pub fn peer(&self, id: &ReplicaId) -> Option<&Peer> {
+    pub(super) fn peer(&self, id: &ReplicaId) -> Option<&Peer> {
         self.peers.get(id)
     }
 
-    pub fn metadata(&self, id: &ReplicaId) -> Option<&ReplicaMetadata> {
+    pub(super) fn metadata(&self, id: &ReplicaId) -> Option<&ReplicaMetadata> {
         self.peers.get(id).map(|peer| &peer.metadata)
     }
 
     /// `num_voting_replicas` returns the total number of voting replicas (including self) to
     /// participate in elections.
-    pub fn num_voting_replicas(&self) -> usize {
+    pub(super) fn num_voting_replicas(&self) -> usize {
         // Currently, we don't support non-voting peers, so we just count
         // peers + self.
         self.peers.len() + 1
     }
 }
 
+// TODO:1 refactor replica wiring and then change to `pub(super)`
 #[derive(Debug, thiserror::Error)]
-pub enum InvalidCluster {
+pub(crate) enum InvalidCluster {
     #[error("duplicate replica '{0}' in cluster config")]
     DuplicateReplicaId(String),
     #[error("invalid URI")]

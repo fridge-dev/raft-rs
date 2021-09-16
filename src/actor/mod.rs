@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 // v1 Design choice: Disk interaction will be synchronous. Future improvement: There should be a
 //                   Disk Actor.
 #[derive(Debug)]
-pub enum Event {
+pub(crate) enum Event {
     // Leader: Write to disk, locally buffer entry to be replicated later. Also stores callback.
     // Candidate: Reject request.
     // Follower: Redirect.
@@ -58,7 +58,7 @@ pub enum Event {
     FollowerTimeout, /* Payload? */
 }
 
-pub struct Callback<O: Debug, E: Error>(oneshot::Sender<Result<O, E>>);
+pub(crate) struct Callback<O: Debug, E: Error>(oneshot::Sender<Result<O, E>>);
 
 impl<O: Debug, E: Error> Debug for Callback<O, E> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -74,23 +74,23 @@ impl<O: Debug, E: Error> Callback<O, E> {
 
 #[derive(Debug, thiserror::Error)]
 #[error("Actor has exited")]
-pub struct ActorExitedErr;
+pub(crate) struct ActorExitedErr;
 
 #[derive(Clone)]
-pub struct ActorClient {
+pub(crate) struct ActorClient {
     // When to use try_send vs send? Do all calls have same criticality?
     sender: Arc<mpsc::Sender<Event>>,
 }
 
 #[derive(Clone)]
-pub struct WeakActorClient {
+pub(crate) struct WeakActorClient {
     sender: Weak<mpsc::Sender<Event>>,
 }
 
 impl ActorClient {
     // Never give access to raw Sender, as our graceful shutdown behavior relies on
     // actor client clones dropping.
-    pub fn new(buffer_size: usize) -> (Self, mpsc::Receiver<Event>) {
+    pub(crate) fn new(buffer_size: usize) -> (Self, mpsc::Receiver<Event>) {
         let (tx, rx) = mpsc::channel(buffer_size);
 
         let client = ActorClient { sender: Arc::new(tx) };
@@ -98,13 +98,13 @@ impl ActorClient {
         (client, rx)
     }
 
-    pub fn weak(&self) -> WeakActorClient {
+    pub(crate) fn weak(&self) -> WeakActorClient {
         WeakActorClient {
             sender: Arc::downgrade(&self.sender),
         }
     }
 
-    pub async fn enqueue_for_replication(
+    pub(crate) async fn enqueue_for_replication(
         &self,
         input: replica::EnqueueForReplicationInput,
     ) -> Result<replica::EnqueueForReplicationOutput, replica::EnqueueForReplicationError> {
@@ -122,7 +122,7 @@ impl ActorClient {
 }
 
 impl WeakActorClient {
-    pub async fn request_vote(
+    pub(crate) async fn request_vote(
         &self,
         input: replica::RequestVoteInput,
     ) -> Result<replica::RequestVoteOutput, replica::RequestVoteError> {
@@ -134,14 +134,14 @@ impl WeakActorClient {
         rx.await.map_err(|_| replica::RequestVoteError::ActorExited)?
     }
 
-    pub async fn notify_request_vote_reply_from_peer(
+    pub(crate) async fn notify_request_vote_reply_from_peer(
         &self,
         reply: replica::RequestVoteReplyFromPeer,
     ) -> Result<(), ActorExitedErr> {
         self.send_to_actor(Event::RequestVoteReplyFromPeer(reply)).await
     }
 
-    pub async fn append_entries(
+    pub(crate) async fn append_entries(
         &self,
         input: replica::AppendEntriesInput,
     ) -> Result<replica::AppendEntriesOutput, replica::AppendEntriesError> {
@@ -153,18 +153,18 @@ impl WeakActorClient {
         rx.await.map_err(|_| replica::AppendEntriesError::ActorExited)?
     }
 
-    pub async fn notify_append_entries_reply_from_peer(
+    pub(crate) async fn notify_append_entries_reply_from_peer(
         &self,
         reply: replica::AppendEntriesReplyFromPeer,
     ) -> Result<(), ActorExitedErr> {
         self.send_to_actor(Event::AppendEntriesReplyFromPeer(reply)).await
     }
 
-    pub async fn leader_timer(&self, input: replica::LeaderTimerTick) -> Result<(), ActorExitedErr> {
+    pub(crate) async fn leader_timer(&self, input: replica::LeaderTimerTick) -> Result<(), ActorExitedErr> {
         self.send_to_actor(Event::LeaderTimer(input)).await
     }
 
-    pub async fn follower_timeout(&self) -> Result<(), ActorExitedErr> {
+    pub(crate) async fn follower_timeout(&self) -> Result<(), ActorExitedErr> {
         self.send_to_actor(Event::FollowerTimeout).await
     }
 
@@ -177,7 +177,7 @@ impl WeakActorClient {
 }
 
 /// ReplicaActor is replica logic in actor model.
-pub struct ReplicaActor<L, S>
+pub(crate) struct ReplicaActor<L, S>
 where
     L: commitlog::Log<replica::LogEntry>,
     S: replica::PersistentLocalState,
@@ -192,7 +192,7 @@ where
     L: commitlog::Log<replica::LogEntry> + 'static,
     S: replica::PersistentLocalState + 'static,
 {
-    pub fn new(logger: slog::Logger, receiver: mpsc::Receiver<Event>, replica: replica::Replica<L, S>) -> Self {
+    pub(crate) fn new(logger: slog::Logger, receiver: mpsc::Receiver<Event>, replica: replica::Replica<L, S>) -> Self {
         ReplicaActor {
             logger,
             receiver,
@@ -200,7 +200,7 @@ where
         }
     }
 
-    pub async fn run_event_loop(mut self) {
+    pub(crate) async fn run_event_loop(mut self) {
         while let Some(event) = self.receiver.recv().await {
             slog::trace!(self.logger, "Received: {:?}", event);
             self.handle_event(event);

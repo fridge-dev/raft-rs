@@ -12,30 +12,30 @@ impl U64NonZero {
 
 /// Index is an index of an entry in the log; i.e. a log entry's index.
 #[derive(Copy, Clone, PartialOrd, PartialEq, Ord, Eq)]
-pub struct Index(U64NonZero);
+pub(crate) struct Index(U64NonZero);
 
 impl Index {
-    pub fn new(index: u64) -> Self {
+    pub(crate) fn new(index: u64) -> Self {
         Index(U64NonZero::new(index))
     }
 
-    pub fn new_usize(index: usize) -> Self {
+    pub(crate) fn new_usize(index: usize) -> Self {
         Self::new(index as u64)
     }
 
-    pub fn start_index() -> Self {
+    pub(crate) fn start_index() -> Self {
         Self::new(1)
     }
 
-    pub fn as_u64(&self) -> u64 {
+    pub(crate) fn as_u64(&self) -> u64 {
         self.0 .0
     }
 
-    pub fn plus(&self, delta: u64) -> Index {
+    pub(crate) fn plus(&self, delta: u64) -> Index {
         Index::new(self.as_u64() + delta)
     }
 
-    pub fn checked_minus(&self, delta: u64) -> Option<Index> {
+    pub(crate) fn checked_minus(&self, delta: u64) -> Option<Index> {
         let new_value = self.as_u64() - delta;
         if new_value > 0 {
             Some(Index::new(new_value))
@@ -55,7 +55,7 @@ impl fmt::Debug for Index {
 ///
 /// Log indexes entries starting from 1. There will be no entry existing at index 0. The first
 /// entry is written at index 1.
-pub trait Log<E: Entry> {
+pub(crate) trait Log<E: Entry> {
     /// append() appends a log entry to the log at the next log entry index, then returns
     /// the log entry index that was just used to append the entry.
     fn append(&mut self, entry: E) -> Result<Index, io::Error>;
@@ -72,4 +72,4 @@ pub trait Log<E: Entry> {
 }
 
 // Choice of Vec<u8> vs Bytes will depend on whats easier for disk to use.
-pub trait Entry: Clone + From<Vec<u8>> + Into<Vec<u8>> {}
+pub(crate) trait Entry: Clone + From<Vec<u8>> + Into<Vec<u8>> {}

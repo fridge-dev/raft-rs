@@ -6,19 +6,19 @@ use std::io;
 use std::net::Ipv4Addr;
 
 #[derive(Debug)]
-pub struct EnqueueForReplicationInput {
-    pub data: Bytes,
+pub(crate) struct EnqueueForReplicationInput {
+    pub(crate) data: Bytes,
 }
 
 #[derive(Debug)]
-pub struct EnqueueForReplicationOutput {
-    pub enqueued_term: Term,
+pub(crate) struct EnqueueForReplicationOutput {
+    pub(crate) enqueued_term: Term,
     // TODO:2.5 Index is type from commitlog crate. Bad abstraction. Fix it.
-    pub enqueued_index: Index,
+    pub(crate) enqueued_index: Index,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum EnqueueForReplicationError {
+pub(crate) enum EnqueueForReplicationError {
     #[error("I'm not leader")]
     LeaderRedirect(LeaderRedirectInfo),
 
@@ -35,27 +35,27 @@ pub enum EnqueueForReplicationError {
 }
 
 #[derive(Debug, Clone)]
-pub struct LeaderRedirectInfo {
-    pub replica_id: ReplicaId,
-    pub ip_addr: Ipv4Addr,
-    pub replica_blob: ReplicaInfoBlob,
+pub(crate) struct LeaderRedirectInfo {
+    pub(crate) replica_id: ReplicaId,
+    pub(crate) ip_addr: Ipv4Addr,
+    pub(crate) replica_blob: ReplicaInfoBlob,
 }
 
 #[derive(Debug)]
-pub struct RequestVoteInput {
-    pub candidate_term: Term,
-    pub candidate_id: ReplicaId,
+pub(crate) struct RequestVoteInput {
+    pub(crate) candidate_term: Term,
+    pub(crate) candidate_id: ReplicaId,
     // TODO:2.5 Index is type from commitlog crate. Bad abstraction. Fix it.
-    pub candidate_last_log_entry: Option<(Term, Index)>,
+    pub(crate) candidate_last_log_entry: Option<(Term, Index)>,
 }
 
 #[derive(Debug)]
-pub struct RequestVoteOutput {
-    pub vote_granted: bool,
+pub(crate) struct RequestVoteOutput {
+    pub(crate) vote_granted: bool,
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum RequestVoteError {
+pub(crate) enum RequestVoteError {
     #[error("Requesting candidate is not in the cluster")]
     CandidateNotInCluster,
     #[error("Requesting candidate's term is out of date")]
@@ -65,30 +65,30 @@ pub enum RequestVoteError {
 }
 
 #[derive(Debug)]
-pub struct AppendEntriesInput {
-    pub leader_term: Term,
-    pub leader_id: ReplicaId,
+pub(crate) struct AppendEntriesInput {
+    pub(crate) leader_term: Term,
+    pub(crate) leader_id: ReplicaId,
     // "Previous log entry" is the log entry immediately preceding the new ones in AppendEntriesInput.
     // TODO:2.5 Index is type from commitlog crate. Bad abstraction. Fix it.
-    pub leader_previous_log_entry: Option<(Term, Index)>,
+    pub(crate) leader_previous_log_entry: Option<(Term, Index)>,
     // TODO:2.5 Index is type from commitlog crate. Bad abstraction. Fix it.
-    pub leader_commit_index: Option<Index>,
-    pub new_entries: Vec<AppendEntriesLogEntry>,
+    pub(crate) leader_commit_index: Option<Index>,
+    pub(crate) new_entries: Vec<AppendEntriesLogEntry>,
 }
 
 #[derive(Debug)]
-pub struct AppendEntriesLogEntry {
-    pub term: Term,
-    pub data: Bytes,
+pub(crate) struct AppendEntriesLogEntry {
+    pub(crate) term: Term,
+    pub(crate) data: Bytes,
 }
 
 #[derive(Debug)]
-pub struct AppendEntriesOutput {
+pub(crate) struct AppendEntriesOutput {
     // Nothing
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum AppendEntriesError {
+pub(crate) enum AppendEntriesError {
     #[error("Client is not in cluster")]
     ClientNotInCluster,
     #[error("Client's term is out of date")]
@@ -102,19 +102,19 @@ pub enum AppendEntriesError {
 }
 
 #[derive(Debug)]
-pub struct TermOutOfDateInfo {
-    pub current_term: Term,
+pub(crate) struct TermOutOfDateInfo {
+    pub(crate) current_term: Term,
 }
 
 #[derive(Debug)]
-pub struct RequestVoteReplyFromPeer {
-    pub peer_id: ReplicaId,
-    pub term: Term,
-    pub result: RequestVoteResult,
+pub(crate) struct RequestVoteReplyFromPeer {
+    pub(crate) peer_id: ReplicaId,
+    pub(crate) term: Term,
+    pub(crate) result: RequestVoteResult,
 }
 
 #[derive(Debug)]
-pub enum RequestVoteResult {
+pub(crate) enum RequestVoteResult {
     VoteGranted,
     VoteNotGranted,
     RetryableFailure,
@@ -122,23 +122,23 @@ pub enum RequestVoteResult {
 }
 
 #[derive(Debug)]
-pub struct AppendEntriesReplyFromPeer {
-    pub descriptor: AppendEntriesReplyFromPeerDescriptor,
-    pub result: Result<(), AppendEntriesReplyFromPeerError>,
+pub(crate) struct AppendEntriesReplyFromPeer {
+    pub(crate) descriptor: AppendEntriesReplyFromPeerDescriptor,
+    pub(crate) result: Result<(), AppendEntriesReplyFromPeerError>,
 }
 
 // This is basically info about the original request
 #[derive(Debug)]
-pub struct AppendEntriesReplyFromPeerDescriptor {
-    pub peer_id: ReplicaId,
-    pub term: Term,
-    pub seq_no: u64,
-    pub previous_log_entry_index: Option<Index>,
-    pub num_log_entries: usize,
+pub(crate) struct AppendEntriesReplyFromPeerDescriptor {
+    pub(crate) peer_id: ReplicaId,
+    pub(crate) term: Term,
+    pub(crate) seq_no: u64,
+    pub(crate) previous_log_entry_index: Option<Index>,
+    pub(crate) num_log_entries: usize,
 }
 
 #[derive(Debug)]
-pub enum AppendEntriesReplyFromPeerError {
+pub(crate) enum AppendEntriesReplyFromPeerError {
     PeerMissingPreviousLogEntry,
     RetryableFailure(String),
     StaleTerm { new_term: Term },
@@ -146,7 +146,7 @@ pub enum AppendEntriesReplyFromPeerError {
 
 /// LeaderTimerTick contains info for a single tick of a leader's per-peer timer.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LeaderTimerTick {
-    pub peer_id: ReplicaId,
-    pub term: Term,
+pub(crate) struct LeaderTimerTick {
+    pub(crate) peer_id: ReplicaId,
+    pub(crate) term: Term,
 }

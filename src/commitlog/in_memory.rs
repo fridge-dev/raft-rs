@@ -7,7 +7,7 @@ use std::{io, thread};
 // persist the data durably. I will theoretically model it here.
 //
 // To improve on this, see storage.rs.
-pub struct InMemoryLog<E: Entry> {
+pub(crate) struct InMemoryLog<E: Entry> {
     // We don't *need* to convert these to bytes. We could just hold the original entry in memory,
     // but we want to exercise the conversion logic.
     log: Vec<Vec<u8>>,
@@ -16,7 +16,7 @@ pub struct InMemoryLog<E: Entry> {
 }
 
 impl<E: Entry> InMemoryLog<E> {
-    pub fn create(info_log: slog::Logger) -> Result<Self, io::Error> {
+    pub(crate) fn create(info_log: slog::Logger) -> Result<Self, io::Error> {
         Ok(InMemoryLog {
             log: vec![],
             info_log,

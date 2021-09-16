@@ -5,7 +5,7 @@ use bytes::Bytes;
 use std::fmt;
 use tokio::sync::mpsc;
 
-pub fn new() -> (RaftCommitStreamPublisher, RaftCommitStream) {
+pub(crate) fn new() -> (RaftCommitStreamPublisher, RaftCommitStream) {
     let (tx, rx) = mpsc::unbounded_channel();
 
     let applier_sender = RaftCommitStreamPublisher { sender: tx };
@@ -14,7 +14,7 @@ pub fn new() -> (RaftCommitStreamPublisher, RaftCommitStream) {
     (applier_sender, applier_receiver)
 }
 
-pub struct RaftCommitStreamPublisher {
+pub(crate) struct RaftCommitStreamPublisher {
     sender: mpsc::UnboundedSender<RaftCommittedEntry>,
 }
 
@@ -29,7 +29,7 @@ pub struct RaftCommittedEntry {
 }
 
 impl RaftCommitStreamPublisher {
-    pub fn notify_commit(&self, logger: &slog::Logger, term: Term, entry_index: Index, data: Bytes) {
+    pub(crate) fn notify_commit(&self, logger: &slog::Logger, term: Term, entry_index: Index, data: Bytes) {
         let entry = RaftCommittedEntry {
             entry_id: RaftEntryId { term, entry_index },
             data,

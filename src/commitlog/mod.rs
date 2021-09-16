@@ -3,7 +3,7 @@ mod log;
 mod storage;
 
 // TODO:2 move commitlog to its own crate/repo.
-pub use in_memory::InMemoryLog;
-pub use log::Entry;
-pub use log::Index;
-pub use log::Log;
+pub(crate) use in_memory::InMemoryLog;
+pub(crate) use log::Entry;
+pub(crate) use log::Index;
+pub(crate) use log::Log;

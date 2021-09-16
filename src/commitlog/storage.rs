@@ -9,17 +9,17 @@ use std::marker::PhantomData;
 // https://thehoard.blog/how-kafkas-storage-internals-work-3a29b02e026.
 //
 // https://github.com/travisjeffery/jocko/tree/master/commitlog is a good (golang) reference.
-pub struct SegmentedDiskLog<E: Entry> {
+pub(crate) struct SegmentedDiskLog<E: Entry> {
     _pd: PhantomData<E>,
 }
 
-pub struct SegmentedDiskLogConfig {
+pub(crate) struct SegmentedDiskLogConfig {
     pub directory: String,
     pub max_data_log_size_bytes: u64,
 }
 
 impl<E: Entry> SegmentedDiskLog<E> {
-    pub fn create(_: SegmentedDiskLogConfig) -> Result<Self, io::Error> {
+    pub(crate) fn create(_: SegmentedDiskLogConfig) -> Result<Self, io::Error> {
         Ok(SegmentedDiskLog {
             // Nothing
             _pd: Default::default(),

@@ -1,7 +1,7 @@
 mod server;
 mod shutdown;
 
-pub use server::RpcServer;
-pub use shutdown::shutdown_signal;
-pub use shutdown::RpcServerShutdownHandle;
-pub use shutdown::RpcServerShutdownSignal;
+pub(crate) use server::RpcServer;
+pub(crate) use shutdown::shutdown_signal;
+pub(crate) use shutdown::RpcServerShutdownHandle;
+pub(crate) use shutdown::RpcServerShutdownSignal;

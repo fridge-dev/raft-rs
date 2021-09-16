@@ -3,7 +3,7 @@ use crate::grpc::{ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestV
 use tonic::transport::{Channel, Endpoint, Uri};
 
 #[derive(Clone)]
-pub struct PeerRpcClient {
+pub(super) struct PeerRpcClient {
     logger: slog::Logger,
     endpoint: Endpoint,
     connection: Conn,
@@ -18,7 +18,7 @@ enum Conn {
 }
 
 impl PeerRpcClient {
-    pub async fn new(logger: slog::Logger, uri: Uri) -> Self {
+    pub(super) async fn new(logger: slog::Logger, uri: Uri) -> Self {
         let endpoint = Endpoint::from(uri);
         let connection = Self::try_connect(&logger, &endpoint).await;
 
@@ -29,7 +29,7 @@ impl PeerRpcClient {
         }
     }
 
-    pub async fn request_vote(
+    pub(super) async fn request_vote(
         &mut self,
         request: ProtoRequestVoteReq,
     ) -> Result<ProtoRequestVoteResult, tonic::Status> {
@@ -41,7 +41,7 @@ impl PeerRpcClient {
         return Err(tonic::Status::new(tonic::Code::Unavailable, "couldn't connect"));
     }
 
-    pub async fn append_entries(
+    pub(super) async fn append_entries(
         &mut self,
         request: ProtoAppendEntriesReq,
     ) -> Result<ProtoAppendEntriesResult, tonic::Status> {

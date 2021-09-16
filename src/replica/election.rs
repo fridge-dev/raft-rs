@@ -2,7 +2,7 @@ use crate::actor;
 use crate::commitlog::Index;
 use crate::replica::peers::ReplicaId;
 use crate::replica::replica_api::LeaderRedirectInfo;
-use crate::replica::timers::{FollowerTimerHandle, LeaderTimerHandle};
+use crate::replica::election::timers::{FollowerTimerHandle, LeaderTimerHandle};
 use crate::replica::Term;
 use std::collections::hash_map::Values;
 use std::collections::{HashMap, HashSet};
@@ -10,8 +10,11 @@ use std::fmt;
 use tokio::sync::watch;
 use tokio::time::Duration;
 
+// TODO:1 break the rest of this large file into sub-mods.
+mod timers;
+
 #[derive(Clone)]
-pub struct ElectionConfig {
+pub(super) struct ElectionConfig {
     pub my_replica_id: ReplicaId,
     pub leader_heartbeat_duration: Duration,
     pub follower_min_timeout: Duration,
@@ -21,7 +24,7 @@ pub struct ElectionConfig {
 /// ElectionState is responsible for holding state specific to the stage in an election. Its
 /// methods are responsible for "what" to do. It is NOT responsible for validating anything
 /// specific to logs, terms, peers, etc. or knowing "when" to do something.
-pub struct ElectionState {
+pub(super) struct ElectionState {
     state: State,
     config: ElectionConfig,
     actor_client: actor::WeakActorClient,
@@ -30,7 +33,7 @@ pub struct ElectionState {
 
 impl ElectionState {
     /// `new_follower()` creates a new ElectionState instance that starts out as a follower.
-    pub fn new_follower(
+    pub(super) fn new_follower(
         config: ElectionConfig,
         actor_client: actor::WeakActorClient,
     ) -> (Self, ElectionStateChangeListener) {
@@ -51,7 +54,7 @@ impl ElectionState {
         (election_state, listener)
     }
 
-    pub fn transition_to_follower(&mut self, new_leader: Option<LeaderRedirectInfo>) {
+    pub(super) fn transition_to_follower(&mut self, new_leader: Option<LeaderRedirectInfo>) {
         self.state = State::Follower(FollowerState::with_leader_info(
             new_leader,
             self.config.follower_min_timeout,
@@ -61,7 +64,7 @@ impl ElectionState {
         self.notify_new_state();
     }
 
-    pub fn transition_to_candidate_and_vote_for_self(&mut self) {
+    pub(super) fn transition_to_candidate_and_vote_for_self(&mut self) {
         let mut cs = CandidateState::new(
             self.config.follower_min_timeout,
             self.config.follower_max_timeout,
@@ -75,7 +78,7 @@ impl ElectionState {
         self.notify_new_state();
     }
 
-    pub fn transition_to_leader(
+    pub(super) fn transition_to_leader(
         &mut self,
         term: Term,
         peer_ids: HashSet<ReplicaId>,
@@ -91,7 +94,7 @@ impl ElectionState {
         self.notify_new_state();
     }
 
-    pub fn current_state(&self) -> ElectionStateSnapshot {
+    pub(super) fn current_state(&self) -> ElectionStateSnapshot {
         Self::current_state_impl(&self.state)
     }
 
@@ -112,14 +115,14 @@ impl ElectionState {
             .notify_new_state(Self::current_state_impl(&self.state));
     }
 
-    pub fn reset_timeout_if_follower(&self) {
+    pub(super) fn reset_timeout_if_follower(&self) {
         if let State::Follower(fs) = &self.state {
             fs.reset_timeout();
         }
     }
 
     // TODO:3 learn about Cow and consider using Cow<LeaderRedirectInfo>
-    pub fn set_leader_if_unknown(&mut self, leader: &LeaderRedirectInfo) {
+    pub(super) fn set_leader_if_unknown(&mut self, leader: &LeaderRedirectInfo) {
         if let State::Follower(fs) = &mut self.state {
             if fs.leader.is_none() {
                 fs.leader.replace(leader.clone());
@@ -129,7 +132,7 @@ impl ElectionState {
     }
 
     /// Return number of votes received if candidate, or None if no longer Candidate.
-    pub fn add_vote_if_candidate(&mut self, vote_from: ReplicaId) -> Option<usize> {
+    pub(super) fn add_vote_if_candidate(&mut self, vote_from: ReplicaId) -> Option<usize> {
         if let State::Candidate(cs) = &mut self.state {
             Some(cs.add_received_vote(vote_from))
         } else {
@@ -137,7 +140,7 @@ impl ElectionState {
         }
     }
 
-    pub fn leader_state_mut(&mut self) -> Option<&mut LeaderStateTracker> {
+    pub(super) fn leader_state_mut(&mut self) -> Option<&mut LeaderStateTracker> {
         if let State::Leader(ls) = &mut self.state {
             Some(&mut ls.tracker)
         } else {
@@ -161,7 +164,7 @@ impl fmt::Debug for ElectionState {
 }
 
 #[derive(Clone, Debug)]
-pub enum ElectionStateSnapshot {
+pub(crate) enum ElectionStateSnapshot {
     Leader,
     Candidate,
     Follower(LeaderRedirectInfo),
@@ -189,7 +192,7 @@ struct FollowerState {
 }
 
 impl LeaderState {
-    pub fn new(
+    pub(super) fn new(
         peer_ids: HashSet<ReplicaId>,
         previous_log_entry_index: Option<Index>,
         heartbeat_duration: Duration,
@@ -211,7 +214,7 @@ impl LeaderState {
 }
 
 impl CandidateState {
-    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::WeakActorClient) -> Self {
+    pub(super) fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::WeakActorClient) -> Self {
         CandidateState {
             received_votes_from: HashSet::with_capacity(3),
             _follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(min_timeout, max_timeout, actor_client),
@@ -220,21 +223,21 @@ impl CandidateState {
 
     /// `add_received_vote()` returns the number of unique votes we've received after adding the
     /// provided `vote_from`
-    pub fn add_received_vote(&mut self, vote_from: ReplicaId) -> usize {
+    pub(super) fn add_received_vote(&mut self, vote_from: ReplicaId) -> usize {
         self.received_votes_from.insert(vote_from);
         self.received_votes_from.len()
     }
 }
 
 impl FollowerState {
-    pub fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::WeakActorClient) -> Self {
+    pub(super) fn new(min_timeout: Duration, max_timeout: Duration, actor_client: actor::WeakActorClient) -> Self {
         FollowerState {
             leader: None,
             follower_timeout_tracker: FollowerTimerHandle::spawn_timer_task(min_timeout, max_timeout, actor_client),
         }
     }
 
-    pub fn with_leader_info(
+    pub(super) fn with_leader_info(
         leader: Option<LeaderRedirectInfo>,
         min_timeout: Duration,
         max_timeout: Duration,
@@ -246,7 +249,7 @@ impl FollowerState {
         }
     }
 
-    pub fn reset_timeout(&self) {
+    pub(super) fn reset_timeout(&self) {
         self.follower_timeout_tracker.reset_timeout();
     }
 }
@@ -264,18 +267,18 @@ struct ElectionStateChangeNotifier {
 }
 
 impl ElectionStateChangeNotifier {
-    pub fn notify_new_state(&self, new_state: ElectionStateSnapshot) {
+    pub(super) fn notify_new_state(&self, new_state: ElectionStateSnapshot) {
         let _ = self.snd.send(new_state);
     }
 }
 
 #[derive(Clone)]
-pub struct ElectionStateChangeListener {
+pub(crate) struct ElectionStateChangeListener {
     rcv: watch::Receiver<ElectionStateSnapshot>,
 }
 
 impl ElectionStateChangeListener {
-    pub async fn next(&mut self) -> Option<ElectionStateSnapshot> {
+    pub(crate) async fn next(&mut self) -> Option<ElectionStateSnapshot> {
         match self.rcv.changed().await {
             Ok(_) => Some(self.rcv.borrow().clone()),
             Err(_) => None,
@@ -285,7 +288,7 @@ impl ElectionStateChangeListener {
 
 // ------- Leader state tracking -------
 
-pub struct LeaderStateTracker {
+pub(super) struct LeaderStateTracker {
     peer_state: HashMap<ReplicaId, PeerState>,
 }
 
@@ -294,20 +297,20 @@ impl LeaderStateTracker {
         LeaderStateTracker { peer_state }
     }
 
-    pub fn peer_state_mut(&mut self, peer_id: &ReplicaId) -> Option<&mut PeerState> {
+    pub(super) fn peer_state_mut(&mut self, peer_id: &ReplicaId) -> Option<&mut PeerState> {
         self.peer_state.get_mut(peer_id)
     }
 
-    pub fn peer_ids(&self) -> HashSet<ReplicaId> {
+    pub(super) fn peer_ids(&self) -> HashSet<ReplicaId> {
         self.peer_state.keys().cloned().collect()
     }
 
-    pub fn peers_iter(&self) -> Values<'_, ReplicaId, PeerState> {
+    pub(super) fn peers_iter(&self) -> Values<'_, ReplicaId, PeerState> {
         self.peer_state.values()
     }
 }
 
-pub struct PeerState {
+pub(super) struct PeerState {
     // Held to send heartbeats for this peer
     leader_timer_handler: LeaderTimerHandle,
 
@@ -342,15 +345,15 @@ impl PeerState {
         }
     }
 
-    pub fn next_and_previous_log_index(&self) -> (Index, Option<Index>) {
+    pub(super) fn next_and_previous_log_index(&self) -> (Index, Option<Index>) {
         (self.next, self.next.checked_minus(1))
     }
 
-    pub fn matched(&self) -> Option<Index> {
+    pub(super) fn matched(&self) -> Option<Index> {
         self.matched
     }
 
-    pub fn handle_append_entries_result(
+    pub(super) fn handle_append_entries_result(
         &mut self,
         logger: &slog::Logger,
         received_seq_no: u64,
@@ -428,11 +431,11 @@ impl PeerState {
         }
     }
 
-    pub fn has_outstanding_request(&self) -> bool {
+    pub(super) fn has_outstanding_request(&self) -> bool {
         self.last_received_seq_no < self.last_sent_seq_no
     }
 
-    pub fn next_seq_no(&mut self) -> u64 {
+    pub(super) fn next_seq_no(&mut self) -> u64 {
         self.last_sent_seq_no += 1;
         self.last_sent_seq_no
     }
@@ -447,13 +450,13 @@ impl PeerState {
         }
     }
 
-    pub fn reset_heartbeat_timer(&self) {
+    pub(super) fn reset_heartbeat_timer(&self) {
         self.leader_timer_handler.reset_heartbeat_timer();
     }
 }
 
 #[derive(Debug)]
-pub enum PeerStateUpdate {
+pub(super) enum PeerStateUpdate {
     Success {
         previous_log_entry: Option<Index>,
         num_entries_replicated: usize,
