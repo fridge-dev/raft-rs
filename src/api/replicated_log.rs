@@ -4,14 +4,14 @@ use crate::replica;
 use bytes::Bytes;
 use std::io;
 
-/// ReplicatedLog is the replicated log for external application to append to.
-pub struct ReplicatedLog {
+/// RaftReplicatedLog is the replicated log for external application to append to.
+pub struct RaftReplicatedLog {
     actor_client: ActorClient,
 }
 
-impl ReplicatedLog {
+impl RaftReplicatedLog {
     pub(crate) fn new(actor_client: ActorClient) -> Self {
-        ReplicatedLog { actor_client }
+        RaftReplicatedLog { actor_client }
     }
 
     pub async fn enqueue_entry(&self, input: EnqueueEntryInput) -> Result<EnqueueEntryOutput, EnqueueEntryError> {

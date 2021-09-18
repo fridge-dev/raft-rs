@@ -1,13 +1,12 @@
 use crate::actor::WeakActorClient;
-use crate::api;
 use crate::commitlog::{Index, Log};
 use crate::grpc::{
     proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
     ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq,
 };
-use crate::replica::write_ahead_log::{LogEntry, WriteAheadLog};
+use crate::replica::write_ahead_log::{WriteAheadLogEntry, WriteAheadLog};
 use crate::replica::election::{
-    ElectionConfig, ElectionState, ElectionStateChangeListener, ElectionStateSnapshot, PeerStateUpdate,
+    ElectionState, ElectionStateSnapshot, PeerStateUpdate,
 };
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peer_client::PeerRpcClient;
@@ -27,33 +26,11 @@ use tokio::time::error::Elapsed;
 use tokio::time::Duration;
 use tonic::Status;
 
-pub(crate) struct ReplicaConfig<L, S>
-where
-    L: Log<LogEntry>,
-    S: PersistentLocalState,
-{
-    pub logger: slog::Logger,
-    pub cluster_tracker: ClusterTracker,
-    pub commit_log: L,
-    pub local_state: S,
-    pub commit_stream_publisher: api::RaftCommitStreamPublisher,
-    pub server_shutdown_handle: server::RpcServerShutdownHandle,
-    pub actor_client: WeakActorClient,
-    pub leader_heartbeat_duration: Duration,
-    pub follower_min_timeout: Duration,
-    pub follower_max_timeout: Duration,
-    pub append_entries_timeout: Duration,
-}
-
-pub(crate) struct Replica<L, S>
-where
-    L: Log<LogEntry>,
-    S: PersistentLocalState,
-{
+pub(crate) struct Replica<L> where L: Log<WriteAheadLogEntry> {
     logger: slog::Logger,
     my_replica_id: ReplicaId,
     cluster_tracker: ClusterTracker,
-    local_state: S,
+    local_state: Box<dyn PersistentLocalState + Send + Sync + 'static>,
     election_state: ElectionState,
     write_ahead_log: WriteAheadLog<L>,
     actor_client: WeakActorClient,
@@ -63,37 +40,29 @@ where
 
 // TODO:1 Implement cluster membership changes.
 // TODO:1 Implement log compaction.
-impl<L, S> Replica<L, S>
-where
-    L: Log<LogEntry> + 'static,
-    S: PersistentLocalState + 'static,
-{
-    pub fn new(config: ReplicaConfig<L, S>) -> (Self, ElectionStateChangeListener) {
-        let my_replica_id = config.cluster_tracker.my_replica_id().clone();
-        let (election_state, election_state_change_listener) = ElectionState::new_follower(
-            ElectionConfig {
-                my_replica_id: my_replica_id.clone(),
-                leader_heartbeat_duration: config.leader_heartbeat_duration,
-                follower_min_timeout: config.follower_min_timeout,
-                follower_max_timeout: config.follower_max_timeout,
-            },
-            config.actor_client.clone(),
-        );
-        let commit_log = WriteAheadLog::new(config.logger.clone(), config.commit_log, config.commit_stream_publisher);
-
-        let replica = Replica {
-            logger: config.logger,
+impl<L> Replica<L> where L: Log<WriteAheadLogEntry> + 'static {
+    pub(super) fn new(
+        logger: slog::Logger,
+        my_replica_id: ReplicaId,
+        cluster_tracker: ClusterTracker,
+        local_state: Box<dyn PersistentLocalState + Send + Sync + 'static>,
+        election_state: ElectionState,
+        write_ahead_log: WriteAheadLog<L>,
+        actor_client: WeakActorClient,
+        append_entries_timeout: Duration,
+        server_shutdown: server::RpcServerShutdownHandle,
+    ) -> Self {
+        Self {
+            logger,
             my_replica_id,
-            cluster_tracker: config.cluster_tracker,
-            local_state: config.local_state,
+            cluster_tracker,
+            local_state,
             election_state,
-            write_ahead_log: commit_log,
-            actor_client: config.actor_client,
-            append_entries_timeout: config.append_entries_timeout,
-            _server_shutdown: config.server_shutdown_handle,
-        };
-
-        (replica, election_state_change_listener)
+            write_ahead_log,
+            actor_client,
+            append_entries_timeout,
+            _server_shutdown: server_shutdown,
+        }
     }
 
     pub(crate) fn handle_enqueue_for_replication(
@@ -119,7 +88,7 @@ where
         // > If command received from client: append entry to local log,
         // > respond after entry applied to state machine (§5.3)
         let term = self.local_state.current_term();
-        let new_entry = LogEntry {
+        let new_entry = WriteAheadLogEntry {
             term,
             data: input.data.to_vec(),
         };
@@ -406,7 +375,7 @@ where
             // 4. (append)
             let appended_index = self
                 .write_ahead_log
-                .append(LogEntry {
+                .append(WriteAheadLogEntry {
                     term: new_entry.term,
                     data: new_entry.data.to_vec(),
                 })
@@ -867,7 +836,7 @@ enum HandleLeaderTimerError {
 mod leader_timer_handler {
     use crate::commitlog::{Index, Log};
     use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
-    use crate::replica::write_ahead_log::{WriteAheadLog, LogEntry};
+    use crate::replica::write_ahead_log::{WriteAheadLog, WriteAheadLogEntry};
     use crate::replica::election::PeerState;
     use crate::replica::replica::HandleLeaderTimerError;
     use crate::replica::{AppendEntriesReplyFromPeerDescriptor, ReplicaId, Term};
@@ -880,7 +849,7 @@ mod leader_timer_handler {
         commit_log: &WriteAheadLog<L>,
     ) -> Result<(ProtoAppendEntriesReq, AppendEntriesReplyFromPeerDescriptor), HandleLeaderTimerError>
     where
-        L: Log<LogEntry>,
+        L: Log<WriteAheadLogEntry>,
     {
         // Simplicity vs throughput tradeoff. We're just going to allow 1 outstanding request per
         // peer; no pipelining. This should not limit throughput too badly however, as we will still
@@ -933,7 +902,7 @@ mod leader_timer_handler {
         my_id: ReplicaId,
         previous_log_entry_metadata: Option<(Term, Index)>,
         commit_index: Option<Index>,
-        new_entries: Vec<LogEntry>,
+        new_entries: Vec<WriteAheadLogEntry>,
     ) -> ProtoAppendEntriesReq {
         let commit_index_u64 = match commit_index {
             None => 0,
@@ -968,10 +937,9 @@ mod leader_timer_handler {
 mod tests {
     use super::*;
     use crate::commitlog::{InMemoryLog, Index};
-    use crate::replica::write_ahead_log::LogEntry;
-    use crate::replica::local_state::VolatileLocalState;
+    use crate::replica::write_ahead_log::WriteAheadLogEntry;
 
-    type Repl = Replica<InMemoryLog<LogEntry>, VolatileLocalState>;
+    type Repl = Replica<InMemoryLog<WriteAheadLogEntry>>;
 
     fn opt_index(v: u64) -> Option<Index> {
         if v == 0 {

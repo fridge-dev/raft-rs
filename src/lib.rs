@@ -23,7 +23,7 @@ pub use api::RaftLeaderInfo;
 pub use api::RaftMemberInfo;
 pub use api::RaftMemberInfoBlob;
 pub use api::RaftOptions;
-pub use api::ReplicatedLog;
+pub use api::RaftReplicatedLog;
 
 // Learning 1: `crate::{root_mod}` should not have any code. Just `mod` and `pub use` statements.
 // Learning 2: All `mod` statements, anywhere, should not be `pub`. Only export `pub` via individual

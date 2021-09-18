@@ -5,23 +5,6 @@ use crate::replica;
 // have to re-write this at some point to be more easily usable and expose APIs for properly filtered
 // set of topics, but we don't need that right now.
 
-/// An event that happened, as observed by the local raft replica.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RaftEvent {
-    /// An event of leader election or timeout. Consuming this event type is subtle. It doesn't queue
-    /// intermediate events. If there are multiple events between when application awaits the next event,
-    /// those events will be clobbered into only the most recent event.
-    Election(RaftElectionState),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RaftElectionState {
-    Leader,
-    Candidate,
-    Follower(RaftLeaderInfo),
-    FollowerNoLeader,
-}
-
 pub struct RaftEventListener {
     election_state_change_listener: replica::ElectionStateChangeListener,
 }
@@ -40,6 +23,23 @@ impl RaftEventListener {
             .await
             .map(|election_state| RaftEvent::Election(RaftElectionState::from(election_state)))
     }
+}
+
+/// An event that happened, as observed by the local raft replica.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RaftEvent {
+    /// An event of leader election or timeout. Consuming this event type is subtle. It doesn't queue
+    /// intermediate events. If there are multiple events between when application awaits the next event,
+    /// those events will be clobbered into only the most recent event.
+    Election(RaftElectionState),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RaftElectionState {
+    Leader,
+    Candidate,
+    Follower(RaftLeaderInfo),
+    FollowerNoLeader,
 }
 
 // ------- Conversions --------

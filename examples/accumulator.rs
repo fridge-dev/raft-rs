@@ -94,7 +94,7 @@ mod accumulator_impl {
     use std::error::Error;
 
     pub struct Accumulator {
-        replicated_log: raft::ReplicatedLog,
+        replicated_log: raft::RaftReplicatedLog,
         commit_stream: raft::RaftCommitStream,
         state_machine: AccumulatorStateMachine,
     }

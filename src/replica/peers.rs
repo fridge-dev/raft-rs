@@ -89,6 +89,7 @@ pub(crate) struct ClusterTracker {
 // Associated factory functions
 impl ClusterTracker {
     // TODO:1 refactor replica wiring and then change to `pub(super)`
+    // TODO:1 make sync and use connect_lazy()
     pub(crate) async fn create_valid_cluster(
         logger: slog::Logger,
         my_replica_metadata: ReplicaMetadata,

@@ -1,13 +1,12 @@
 use crate::actor::{ActorClient, ReplicaActor};
 use crate::api::client::RaftClient;
-use crate::api::commit_stream;
 use crate::api::options::RaftOptionsValidated;
 use crate::api::types::RaftMemberInfo;
 use crate::commitlog::InMemoryLog;
-use crate::replica::{ClusterTracker, Replica, ReplicaConfig, ReplicaId, ReplicaMetadata, VolatileLocalState};
-use crate::server;
+use crate::replica::{ClusterTracker, ReplicaMetadata};
+use crate::{server, replica, RaftCommitStream};
 use crate::server::RpcServer;
-use crate::{RaftEventListener, RaftOptions, ReplicatedLog};
+use crate::{RaftEventListener, RaftOptions, RaftReplicatedLog};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::io;
@@ -40,7 +39,6 @@ pub async fn try_create_raft_client(mut config: RaftClientConfig) -> Result<Raft
 
     let commit_log =
         InMemoryLog::create(root_logger.clone()).map_err(|e| RaftClientCreationError::LogInitialization(e))?;
-    let local_state = VolatileLocalState::new(ReplicaId::new(&config.my_replica_id));
 
     let my_member_info = take_me_out(&config.my_replica_id, &mut config.cluster_members)
         .ok_or_else(|| RaftClientCreationError::MeNotInCluster)?;
@@ -49,7 +47,6 @@ pub async fn try_create_raft_client(mut config: RaftClientConfig) -> Result<Raft
     let cluster_tracker =
         try_create_cluster_tracker(root_logger.clone(), my_member_info, config.cluster_members).await?;
 
-    let (commit_stream_publisher, commit_stream) = commit_stream::new();
     let (actor_client, actor_queue_rx) = ActorClient::new(10);
 
     let options = RaftOptionsValidated::try_from(config.options)
@@ -57,19 +54,17 @@ pub async fn try_create_raft_client(mut config: RaftClientConfig) -> Result<Raft
 
     let (server_shutdown_handle, server_shutdown_signal) = server::shutdown_signal();
 
-    let (replica, election_state_change_listener) = Replica::new(ReplicaConfig {
-        logger: root_logger.clone(),
+    let (replica, replica_commit_stream, election_state_change_listener) = replica::create_replica(
+        root_logger.clone(),
         cluster_tracker,
         commit_log,
-        local_state,
-        commit_stream_publisher,
         server_shutdown_handle,
-        actor_client: actor_client.weak(),
-        leader_heartbeat_duration: options.leader_heartbeat_duration,
-        follower_min_timeout: options.follower_min_timeout,
-        follower_max_timeout: options.follower_max_timeout,
-        append_entries_timeout: options.leader_append_entries_timeout,
-    });
+        actor_client.weak(),
+        options.leader_heartbeat_duration,
+        options.follower_min_timeout,
+        options.follower_max_timeout,
+        options.leader_append_entries_timeout,
+    );
 
     let replica_actor = ReplicaActor::new(root_logger.clone(), actor_queue_rx, replica);
     tokio::spawn(replica_actor.run_event_loop());
@@ -77,8 +72,8 @@ pub async fn try_create_raft_client(mut config: RaftClientConfig) -> Result<Raft
     let replica_raft_server = RpcServer::new(root_logger.clone(), actor_client.weak());
     tokio::spawn(replica_raft_server.run(my_server_addr, server_shutdown_signal));
 
-    let replicated_log = ReplicatedLog::new(actor_client);
-
+    let replicated_log = RaftReplicatedLog::new(actor_client);
+    let commit_stream = RaftCommitStream::new(replica_commit_stream);
     let event_listener = RaftEventListener::new(election_state_change_listener);
 
     Ok(RaftClient {

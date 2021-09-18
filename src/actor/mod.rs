@@ -177,22 +177,20 @@ impl WeakActorClient {
 }
 
 /// ReplicaActor is replica logic in actor model.
-pub(crate) struct ReplicaActor<L, S>
+pub(crate) struct ReplicaActor<L>
 where
-    L: commitlog::Log<replica::LogEntry>,
-    S: replica::PersistentLocalState,
+    L: commitlog::Log<replica::WriteAheadLogEntry>,
 {
     logger: slog::Logger,
     receiver: mpsc::Receiver<Event>,
-    replica: replica::Replica<L, S>,
+    replica: replica::Replica<L>,
 }
 
-impl<L, S> ReplicaActor<L, S>
+impl<L> ReplicaActor<L>
 where
-    L: commitlog::Log<replica::LogEntry> + 'static,
-    S: replica::PersistentLocalState + 'static,
+    L: commitlog::Log<replica::WriteAheadLogEntry> + 'static,
 {
-    pub(crate) fn new(logger: slog::Logger, receiver: mpsc::Receiver<Event>, replica: replica::Replica<L, S>) -> Self {
+    pub(crate) fn new(logger: slog::Logger, receiver: mpsc::Receiver<Event>, replica: replica::Replica<L>) -> Self {
         ReplicaActor {
             logger,
             receiver,

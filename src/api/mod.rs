@@ -17,13 +17,10 @@ pub use options::RaftOptions;
 pub use replicated_log::EnqueueEntryError;
 pub use replicated_log::EnqueueEntryInput;
 pub use replicated_log::EnqueueEntryOutput;
-pub use replicated_log::ReplicatedLog;
+pub use replicated_log::RaftReplicatedLog;
 pub use types::RaftEntryId;
 pub use types::RaftLeaderInfo;
 pub use types::RaftMemberInfo;
 pub use types::RaftMemberInfoBlob;
 pub use wiring::try_create_raft_client;
 pub use wiring::RaftClientConfig;
-
-// So Replica can access commit stream.
-pub(crate) use commit_stream::RaftCommitStreamPublisher;

@@ -73,19 +73,21 @@ mod peer_client;
 mod peers;
 mod replica;
 mod replica_api;
+mod replica_wiring;
 mod write_ahead_log;
 
 pub(crate) use election::ElectionStateChangeListener;
 pub(crate) use election::ElectionStateSnapshot;
-pub(crate) use local_state::PersistentLocalState;
 pub(crate) use local_state::Term;
 pub(crate) use peers::ReplicaId;
 pub(crate) use peers::ReplicaInfoBlob;
 pub(crate) use peers::ReplicaMetadata;
 pub(crate) use replica::Replica;
-pub(crate) use replica::ReplicaConfig;
 pub(crate) use replica_api::*;
-pub(crate) use write_ahead_log::LogEntry;
+pub(crate) use replica_wiring::create_replica;
+pub(crate) use write_ahead_log::WriteAheadLogEntry;
+pub(crate) use write_ahead_log::CommittedEntry;
+pub(crate) use write_ahead_log::CommitStream;
 
 // TODO:1 refactor replica wiring and then remove these re-exports
 pub(crate) use peers::ClusterTracker;

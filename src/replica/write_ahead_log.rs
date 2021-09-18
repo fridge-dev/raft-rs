@@ -2,12 +2,27 @@
 //! might seem odd. But I plan to move the commitlog mod into its own crate/repo, at which point
 //! this abstraction will make more sense.
 
-use crate::api;
+mod commit_stream;
+
+pub(crate) use commit_stream::CommitStream;
+pub(crate) use commit_stream::CommittedEntry;
+
 use crate::commitlog;
 use crate::commitlog::Index;
 use crate::replica::local_state::Term;
 use bytes::Bytes;
 use std::io;
+use crate::replica::write_ahead_log::commit_stream::CommitStreamPublisher;
+
+pub(super) fn wired<L>(logger: slog::Logger, log: L,) -> (WriteAheadLog<L>, CommitStream) where
+L: commitlog::Log<WriteAheadLogEntry>,
+{
+    let (publisher, stream) = commit_stream::new();
+
+    let wal = WriteAheadLog::new(logger, log, publisher);
+
+    (wal, stream)
+}
 
 /// RaftLog is the raft-specific log facade.
 ///
@@ -20,7 +35,7 @@ use std::io;
 /// state the log entry is in.
 pub(super) struct WriteAheadLog<L>
 where
-    L: commitlog::Log<LogEntry>,
+    L: commitlog::Log<WriteAheadLogEntry>,
 {
     // Application's info/debug log.
     logger: slog::Logger,
@@ -32,7 +47,7 @@ where
 
     // Commit stream to publish committed entries to. To be consumed by the application layer to
     // apply committed entries to their state machine.
-    commit_stream: api::RaftCommitStreamPublisher,
+    commit_stream: CommitStreamPublisher,
     // Index of highest log entry known to be committed. None if nothing is committed.
     commit_index: Option<Index>,
     // Index of highest log entry applied to state machine. None if nothing is applied.
@@ -41,9 +56,9 @@ where
 
 impl<L> WriteAheadLog<L>
 where
-    L: commitlog::Log<LogEntry>,
+    L: commitlog::Log<WriteAheadLogEntry>,
 {
-    pub(super) fn new(logger: slog::Logger, log: L, commit_stream: api::RaftCommitStreamPublisher) -> Self {
+    fn new(logger: slog::Logger, log: L, commit_stream: CommitStreamPublisher) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
         assert_eq!(
             log.next_index(),
@@ -65,11 +80,11 @@ where
         self.latest_entry_metadata
     }
 
-    pub(super) fn read(&self, index: Index) -> Result<Option<LogEntry>, io::Error> {
+    pub(super) fn read(&self, index: Index) -> Result<Option<WriteAheadLogEntry>, io::Error> {
         self.log.read(index)
     }
 
-    fn read_required(&self, index: Index) -> Result<LogEntry, io::Error> {
+    fn read_required(&self, index: Index) -> Result<WriteAheadLogEntry, io::Error> {
         match self.read(index) {
             Ok(Some(entry)) => Ok(entry),
             Ok(None) => panic!("read_required() found no log entry for index {:?}", index),
@@ -94,7 +109,7 @@ where
         Ok(())
     }
 
-    pub(super) fn append(&mut self, entry: LogEntry) -> Result<Index, io::Error> {
+    pub(super) fn append(&mut self, entry: WriteAheadLogEntry) -> Result<Index, io::Error> {
         let appended_term = entry.term;
         let appended_index = self.log.append(entry)?;
         // Only update state after log action completes.
@@ -237,16 +252,16 @@ where
 /// * Checksum is not needed, it's guaranteed by underlying commitlog.
 /// * Size/length of `Data` is not needed; the underlying commitlog will give us the correctly allocated array.
 #[derive(Clone)]
-pub(crate) struct LogEntry {
+pub(crate) struct WriteAheadLogEntry {
     pub term: Term,
     pub data: Vec<u8>,
 }
 
 const RAFT_LOG_ENTRY_FORMAT_VERSION: u8 = 1;
 
-impl commitlog::Entry for LogEntry {}
+impl commitlog::Entry for WriteAheadLogEntry {}
 
-impl From<Vec<u8>> for LogEntry {
+impl From<Vec<u8>> for WriteAheadLogEntry {
     fn from(bytes: Vec<u8>) -> Self {
         // TODO:2.5 research how to do this correctly, safely, and efficiently.
         // TODO:2.5 use TryFrom so we can return error
@@ -261,14 +276,14 @@ impl From<Vec<u8>> for LogEntry {
             | (bytes[6] as u64) << 5 * 8
             | (bytes[7] as u64) << 6 * 8
             | (bytes[8] as u64) << 7 * 8;
-        LogEntry {
+        WriteAheadLogEntry {
             term: Term::new(term),
             data: bytes[9..].to_vec(),
         }
     }
 }
 
-impl Into<Vec<u8>> for LogEntry {
+impl Into<Vec<u8>> for WriteAheadLogEntry {
     fn into(self) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::with_capacity(1 + 8 + self.data.len());
 
