@@ -4,10 +4,7 @@ use crate::grpc::{
     proto_append_entries_error, proto_append_entries_result, proto_request_vote_error, proto_request_vote_result,
     ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq,
 };
-use crate::replica::write_ahead_log::{WriteAheadLogEntry, WriteAheadLog};
-use crate::replica::election::{
-    ElectionState, ElectionStateSnapshot, PeerStateUpdate,
-};
+use crate::replica::election::{ElectionState, ElectionStateSnapshot, PeerStateUpdate};
 use crate::replica::local_state::{PersistentLocalState, Term};
 use crate::replica::peer_client::PeerRpcClient;
 use crate::replica::peers::{ClusterTracker, Peer, ReplicaId};
@@ -16,6 +13,7 @@ use crate::replica::replica_api::{
     EnqueueForReplicationError, EnqueueForReplicationInput, EnqueueForReplicationOutput, LeaderRedirectInfo,
     RequestVoteError, RequestVoteInput, RequestVoteOutput, RequestVoteReplyFromPeer, TermOutOfDateInfo,
 };
+use crate::replica::write_ahead_log::{WriteAheadLog, WriteAheadLogEntry};
 use crate::replica::{
     AppendEntriesReplyFromPeerDescriptor, AppendEntriesReplyFromPeerError, LeaderTimerTick, RequestVoteResult,
 };
@@ -26,7 +24,10 @@ use tokio::time::error::Elapsed;
 use tokio::time::Duration;
 use tonic::Status;
 
-pub(crate) struct Replica<L> where L: Log<WriteAheadLogEntry> {
+pub(crate) struct Replica<L>
+where
+    L: Log<WriteAheadLogEntry>,
+{
     logger: slog::Logger,
     my_replica_id: ReplicaId,
     cluster_tracker: ClusterTracker,
@@ -40,7 +41,10 @@ pub(crate) struct Replica<L> where L: Log<WriteAheadLogEntry> {
 
 // TODO:1 Implement cluster membership changes.
 // TODO:1 Implement log compaction.
-impl<L> Replica<L> where L: Log<WriteAheadLogEntry> + 'static {
+impl<L> Replica<L>
+where
+    L: Log<WriteAheadLogEntry> + 'static,
+{
     pub(super) fn new(
         logger: slog::Logger,
         my_replica_id: ReplicaId,
@@ -417,7 +421,8 @@ impl<L> Replica<L> where L: Log<WriteAheadLogEntry> + 'static {
                     // TODO:1 see above, I think this is wrong, it should be none?
                     None => leader_commit_index,
                 };
-                self.write_ahead_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
+                self.write_ahead_log
+                    .ratchet_fwd_commit_index_if_changed(new_commit_index);
             }
             (Some(leader_commit_index), Some(my_commit_index)) => {
                 if leader_commit_index > my_commit_index {
@@ -425,7 +430,8 @@ impl<L> Replica<L> where L: Log<WriteAheadLogEntry> + 'static {
                         Some(my_last_index) => cmp::min(leader_commit_index, my_last_index),
                         None => leader_commit_index,
                     };
-                    self.write_ahead_log.ratchet_fwd_commit_index_if_changed(new_commit_index);
+                    self.write_ahead_log
+                        .ratchet_fwd_commit_index_if_changed(new_commit_index);
                 }
             }
         };
@@ -836,9 +842,9 @@ enum HandleLeaderTimerError {
 mod leader_timer_handler {
     use crate::commitlog::{Index, Log};
     use crate::grpc::{ProtoAppendEntriesReq, ProtoLogEntry};
-    use crate::replica::write_ahead_log::{WriteAheadLog, WriteAheadLogEntry};
     use crate::replica::election::PeerState;
     use crate::replica::replica::HandleLeaderTimerError;
+    use crate::replica::write_ahead_log::{WriteAheadLog, WriteAheadLogEntry};
     use crate::replica::{AppendEntriesReplyFromPeerDescriptor, ReplicaId, Term};
 
     pub(super) fn new_append_entries_request<L>(

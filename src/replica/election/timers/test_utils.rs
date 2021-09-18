@@ -1,8 +1,8 @@
-use tokio::sync::mpsc;
-use std::fmt::Debug;
-use std::time::Duration;
 use crate::actor::Event;
 use crate::replica::LeaderTimerTick;
+use std::fmt::Debug;
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 struct TestUtilReceiver<T> {
     rx: mpsc::Receiver<T>,

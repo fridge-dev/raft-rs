@@ -1,8 +1,8 @@
 use crate::actor;
 use crate::commitlog::Index;
+use crate::replica::election::timers::{FollowerTimerHandle, LeaderTimerHandle};
 use crate::replica::peers::ReplicaId;
 use crate::replica::replica_api::LeaderRedirectInfo;
-use crate::replica::election::timers::{FollowerTimerHandle, LeaderTimerHandle};
 use crate::replica::Term;
 use std::collections::hash_map::Values;
 use std::collections::{HashMap, HashSet};

@@ -80,55 +80,43 @@ pub(super) struct Peer {
 }
 
 /// ClusterTracker is the group of replicas participating in a single instance of raft together.
-// TODO:1 refactor replica wiring and then change to `pub(super)`
-pub(crate) struct ClusterTracker {
-    my_replica_metadata: ReplicaMetadata,
+pub(super) struct ClusterTracker {
+    // Peers exclude "my" (local replica) info
     peers: HashMap<ReplicaId, Peer>,
 }
 
 // Associated factory functions
 impl ClusterTracker {
-    // TODO:1 refactor replica wiring and then change to `pub(super)`
-    // TODO:1 make sync and use connect_lazy()
-    pub(crate) async fn create_valid_cluster(
-        logger: slog::Logger,
-        my_replica_metadata: ReplicaMetadata,
+    pub(super) fn create_valid_cluster(
+        my_replica_id: &ReplicaId,
         peer_replica_metadata: Vec<ReplicaMetadata>,
     ) -> Result<Self, InvalidCluster> {
         let cluster_members_by_id = map_with_unique_index(peer_replica_metadata, |m| m.id.clone())
             .map_err(|dupe| InvalidCluster::DuplicateReplicaId(dupe.into_inner()))?;
 
-        if cluster_members_by_id.contains_key(&my_replica_metadata.id) {
-            return Err(InvalidCluster::DuplicateReplicaId(my_replica_metadata.id.into_inner()));
+        if cluster_members_by_id.contains_key(my_replica_id) {
+            return Err(InvalidCluster::DuplicateReplicaId(my_replica_id.clone().into_inner()));
         }
 
-        let peers = ClusterTracker::create_peers(logger, cluster_members_by_id).await?;
+        let peers = ClusterTracker::create_peers(cluster_members_by_id)?;
 
-        Ok(ClusterTracker {
-            my_replica_metadata,
-            peers,
-        })
+        Ok(ClusterTracker { peers })
     }
 
-    async fn create_peers(
-        logger: slog::Logger,
+    fn create_peers(
         cluster_members_by_id: HashMap<ReplicaId, ReplicaMetadata>,
     ) -> Result<HashMap<ReplicaId, Peer>, InvalidCluster> {
         let mut peers: HashMap<ReplicaId, Peer> = HashMap::with_capacity(cluster_members_by_id.len());
         for (peer_replica_id, peer_md) in cluster_members_by_id.into_iter() {
-            let peer = Self::make_peer(logger.clone(), peer_md).await?;
+            let peer = Self::make_peer(peer_md)?;
             peers.insert(peer_replica_id, peer);
         }
         Ok(peers)
     }
 
-    async fn make_peer(logger: slog::Logger, peer_md: ReplicaMetadata) -> Result<Peer, InvalidCluster> {
-        let peer_client_logger = logger.new(slog::o!(
-            "RemoteReplicaId" => peer_md.id.clone().into_inner(),
-            "RemoteIpAddr" => format!("{}:{}", peer_md.ip, peer_md.port),
-        ));
+    fn make_peer(peer_md: ReplicaMetadata) -> Result<Peer, InvalidCluster> {
         let uri = Self::make_uri(peer_md.ip, peer_md.port)?;
-        let client = PeerRpcClient::new(peer_client_logger, uri).await;
+        let client = PeerRpcClient::new(uri);
         Ok(Peer {
             metadata: peer_md,
             client,
@@ -147,10 +135,6 @@ impl ClusterTracker {
 
 // Methods
 impl ClusterTracker {
-    pub(super) fn my_replica_id(&self) -> &ReplicaId {
-        &self.my_replica_metadata.id
-    }
-
     pub(super) fn contains_member(&self, id: &ReplicaId) -> bool {
         self.peers.contains_key(id)
     }
@@ -181,7 +165,6 @@ impl ClusterTracker {
     }
 }
 
-// TODO:1 refactor replica wiring and then change to `pub(super)`
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum InvalidCluster {
     #[error("duplicate replica '{0}' in cluster config")]

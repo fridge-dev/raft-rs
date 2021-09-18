@@ -85,10 +85,6 @@ pub(crate) use peers::ReplicaMetadata;
 pub(crate) use replica::Replica;
 pub(crate) use replica_api::*;
 pub(crate) use replica_wiring::create_replica;
-pub(crate) use write_ahead_log::WriteAheadLogEntry;
-pub(crate) use write_ahead_log::CommittedEntry;
 pub(crate) use write_ahead_log::CommitStream;
-
-// TODO:1 refactor replica wiring and then remove these re-exports
-pub(crate) use peers::ClusterTracker;
-pub(crate) use local_state::VolatileLocalState;
+pub(crate) use write_ahead_log::CommittedEntry;
+pub(crate) use write_ahead_log::WriteAheadLogEntry;

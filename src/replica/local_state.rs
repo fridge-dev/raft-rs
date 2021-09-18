@@ -53,16 +53,14 @@ pub(crate) trait PersistentLocalState {
 // Currently, this is not persistent. It's just in memory. But I'm focusing on raft algorithm more
 // so than integrating with disk correctly.
 // TODO:3 Persist local state to disk, not RAM.
-// TODO:1 refactor replica wiring and then change to `pub(super)`
-pub(crate) struct VolatileLocalState {
+pub(super) struct VolatileLocalState {
     current_term: Term,
     voted_for_this_term: Option<Arc<ReplicaId>>,
     my_replica_id: Arc<ReplicaId>,
 }
 
 impl VolatileLocalState {
-    // TODO:1 refactor replica wiring and then change to `pub(super)`
-    pub(crate) fn new(my_replica_id: ReplicaId) -> Self {
+    pub(super) fn new(my_replica_id: ReplicaId) -> Self {
         VolatileLocalState {
             current_term: Term::new(0),
             voted_for_this_term: None,

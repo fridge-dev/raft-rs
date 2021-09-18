@@ -3,9 +3,9 @@ use crate::api::client::RaftClient;
 use crate::api::options::RaftOptionsValidated;
 use crate::api::types::RaftMemberInfo;
 use crate::commitlog::InMemoryLog;
-use crate::replica::{ClusterTracker, ReplicaMetadata};
-use crate::{server, replica, RaftCommitStream};
+use crate::replica::{ReplicaId, ReplicaMetadata};
 use crate::server::RpcServer;
+use crate::{replica, server, RaftCommitStream};
 use crate::{RaftEventListener, RaftOptions, RaftReplicatedLog};
 use std::convert::TryFrom;
 use std::error::Error;
@@ -34,18 +34,17 @@ pub enum RaftClientCreationError {
     MeNotInCluster,
 }
 
-pub async fn try_create_raft_client(mut config: RaftClientConfig) -> Result<RaftClient, RaftClientCreationError> {
+pub async fn try_create_raft_client(config: RaftClientConfig) -> Result<RaftClient, RaftClientCreationError> {
     let root_logger = config.info_logger;
 
     let commit_log =
         InMemoryLog::create(root_logger.clone()).map_err(|e| RaftClientCreationError::LogInitialization(e))?;
 
-    let my_member_info = take_me_out(&config.my_replica_id, &mut config.cluster_members)
+    let my_member_info = my_info(&config.my_replica_id, &config.cluster_members)
         .ok_or_else(|| RaftClientCreationError::MeNotInCluster)?;
     let my_server_addr = raft_rpc_server_addr(&my_member_info);
 
-    let cluster_tracker =
-        try_create_cluster_tracker(root_logger.clone(), my_member_info, config.cluster_members).await?;
+    let cluster_members = config.cluster_members.into_iter().map(ReplicaMetadata::from).collect();
 
     let (actor_client, actor_queue_rx) = ActorClient::new(10);
 
@@ -56,7 +55,8 @@ pub async fn try_create_raft_client(mut config: RaftClientConfig) -> Result<Raft
 
     let (replica, replica_commit_stream, election_state_change_listener) = replica::create_replica(
         root_logger.clone(),
-        cluster_tracker,
+        ReplicaId::new(config.my_replica_id),
+        cluster_members,
         commit_log,
         server_shutdown_handle,
         actor_client.weak(),
@@ -64,7 +64,8 @@ pub async fn try_create_raft_client(mut config: RaftClientConfig) -> Result<Raft
         options.follower_min_timeout,
         options.follower_max_timeout,
         options.leader_append_entries_timeout,
-    );
+    )
+    .map_err(|e| RaftClientCreationError::InvalidClusterInfo(e.into()))?;
 
     let replica_actor = ReplicaActor::new(root_logger.clone(), actor_queue_rx, replica);
     tokio::spawn(replica_actor.run_event_loop());
@@ -83,30 +84,14 @@ pub async fn try_create_raft_client(mut config: RaftClientConfig) -> Result<Raft
     })
 }
 
-fn take_me_out(my_replica_id: &str, cluster_members: &mut Vec<RaftMemberInfo>) -> Option<RaftMemberInfo> {
-    let mut to_remove = None;
-
-    for (i, member_info) in cluster_members.iter().enumerate() {
+fn my_info<'a>(my_replica_id: &'_ str, cluster_members: &'a Vec<RaftMemberInfo>) -> Option<&'a RaftMemberInfo> {
+    for member_info in cluster_members {
         if my_replica_id == &member_info.replica_id {
-            to_remove = Some(i);
-            break;
+            return Some(member_info);
         }
     }
 
-    to_remove.map(|i| cluster_members.remove(i))
-}
-
-async fn try_create_cluster_tracker(
-    logger: slog::Logger,
-    my_info: RaftMemberInfo,
-    peers_info: Vec<RaftMemberInfo>,
-) -> Result<ClusterTracker, RaftClientCreationError> {
-    let my_replica_metadata = ReplicaMetadata::from(my_info);
-    let peers_replica_metadata = peers_info.into_iter().map(ReplicaMetadata::from).collect();
-
-    ClusterTracker::create_valid_cluster(logger, my_replica_metadata, peers_replica_metadata)
-        .await
-        .map_err(|e| RaftClientCreationError::InvalidClusterInfo(e.into()))
+    None
 }
 
 fn raft_rpc_server_addr(member_info: &RaftMemberInfo) -> SocketAddr {

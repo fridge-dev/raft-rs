@@ -2,75 +2,33 @@ use crate::grpc::grpc_raft_client::GrpcRaftClient;
 use crate::grpc::{ProtoAppendEntriesReq, ProtoAppendEntriesResult, ProtoRequestVoteReq, ProtoRequestVoteResult};
 use tonic::transport::{Channel, Endpoint, Uri};
 
+// This borderline doesn't need to exist, but I'm treating it as a way of limiting/simplifying the
+// public API space of the generated gRPC client.
 #[derive(Clone)]
 pub(super) struct PeerRpcClient {
-    logger: slog::Logger,
-    endpoint: Endpoint,
-    connection: Conn,
-}
-
-/// PeerConnection tracks the lifecycle of a connection. It enables us to start up our
-/// replica even if we can't connect to others.
-#[derive(Clone)]
-enum Conn {
-    Connected(GrpcRaftClient<Channel>),
-    Disconnected,
+    client: GrpcRaftClient<Channel>,
 }
 
 impl PeerRpcClient {
-    pub(super) async fn new(logger: slog::Logger, uri: Uri) -> Self {
+    pub(super) fn new(uri: Uri) -> Self {
         let endpoint = Endpoint::from(uri);
-        let connection = Self::try_connect(&logger, &endpoint).await;
+        let channel = endpoint.connect_lazy().expect("infallible");
+        let client = GrpcRaftClient::new(channel);
 
-        PeerRpcClient {
-            logger,
-            endpoint,
-            connection,
-        }
+        PeerRpcClient { client }
     }
 
     pub(super) async fn request_vote(
         &mut self,
         request: ProtoRequestVoteReq,
     ) -> Result<ProtoRequestVoteResult, tonic::Status> {
-        self.try_reconnect_if_needed().await;
-        if let Conn::Connected(client) = &mut self.connection {
-            return client.request_vote(request).await.map(|r| r.into_inner());
-        }
-
-        return Err(tonic::Status::new(tonic::Code::Unavailable, "couldn't connect"));
+        self.client.request_vote(request).await.map(|r| r.into_inner())
     }
 
     pub(super) async fn append_entries(
         &mut self,
         request: ProtoAppendEntriesReq,
     ) -> Result<ProtoAppendEntriesResult, tonic::Status> {
-        self.try_reconnect_if_needed().await;
-        if let Conn::Connected(client) = &mut self.connection {
-            return client.append_entries(request).await.map(|r| r.into_inner());
-        }
-
-        return Err(tonic::Status::new(tonic::Code::Unavailable, "couldn't connect"));
-    }
-
-    async fn try_reconnect_if_needed(&mut self) {
-        if let Conn::Disconnected = self.connection {
-            self.connection = Self::try_connect(&self.logger, &self.endpoint).await;
-        } else {
-            slog::debug!(self.logger, "Connection re-used");
-        }
-    }
-
-    async fn try_connect(logger: &slog::Logger, endpoint: &Endpoint) -> Conn {
-        match endpoint.connect().await {
-            Ok(conn) => {
-                slog::debug!(logger, "Successfully connected");
-                Conn::Connected(GrpcRaftClient::new(conn))
-            }
-            Err(conn_err) => {
-                slog::warn!(logger, "Failed to connect: {:?}", conn_err);
-                Conn::Disconnected
-            }
-        }
+        self.client.append_entries(request).await.map(|r| r.into_inner())
     }
 }

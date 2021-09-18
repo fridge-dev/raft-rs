@@ -111,8 +111,8 @@ impl<C: Clock + Send + Sync + 'static> FollowerTimerTask<C> {
 mod tests {
     use super::*;
     use crate::actor::ActorClient;
-    use crate::replica::election::timers::time;
     use crate::replica::election::timers::test_utils::TestUtilActor;
+    use crate::replica::election::timers::time;
 
     #[tokio::test]
     async fn follower_timer_handle_reset_and_timeout() {

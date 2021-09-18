@@ -10,12 +10,13 @@ pub(crate) use commit_stream::CommittedEntry;
 use crate::commitlog;
 use crate::commitlog::Index;
 use crate::replica::local_state::Term;
+use crate::replica::write_ahead_log::commit_stream::CommitStreamPublisher;
 use bytes::Bytes;
 use std::io;
-use crate::replica::write_ahead_log::commit_stream::CommitStreamPublisher;
 
-pub(super) fn wired<L>(logger: slog::Logger, log: L,) -> (WriteAheadLog<L>, CommitStream) where
-L: commitlog::Log<WriteAheadLogEntry>,
+pub(super) fn wired<L>(logger: slog::Logger, log: L) -> (WriteAheadLog<L>, CommitStream)
+where
+    L: commitlog::Log<WriteAheadLogEntry>,
 {
     let (publisher, stream) = commit_stream::new();
 

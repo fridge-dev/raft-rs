@@ -1,6 +1,6 @@
-use bytes::Bytes;
 use crate::commitlog::Index;
 use crate::replica::Term;
+use bytes::Bytes;
 use tokio::sync::mpsc;
 
 pub(super) struct CommitStreamPublisher {
@@ -14,7 +14,7 @@ pub(crate) struct CommitStream {
 pub(crate) struct CommittedEntry {
     pub(crate) term: Term,
     pub(crate) index: Index,
-    pub(crate) data: Bytes
+    pub(crate) data: Bytes,
 }
 
 pub(super) fn new() -> (CommitStreamPublisher, CommitStream) {
@@ -28,11 +28,7 @@ pub(super) fn new() -> (CommitStreamPublisher, CommitStream) {
 
 impl CommitStreamPublisher {
     pub(super) fn notify_commit(&self, logger: &slog::Logger, term: Term, index: Index, data: Bytes) {
-        let committed_entry = CommittedEntry {
-            term,
-            index,
-            data
-        };
+        let committed_entry = CommittedEntry { term, index, data };
 
         if let Err(_) = self.sender.send(committed_entry) {
             slog::warn!(logger, "CommitStream has disconnected.");

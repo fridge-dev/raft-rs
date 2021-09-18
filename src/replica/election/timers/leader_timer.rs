@@ -115,11 +115,11 @@ impl<C: Clock> LeaderTimerTask<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use crate::actor::ActorClient;
-    use crate::replica::{ReplicaId, Term, LeaderTimerTick};
-    use crate::replica::election::timers::time;
     use crate::replica::election::timers::test_utils::TestUtilActor;
+    use crate::replica::election::timers::time;
+    use crate::replica::{LeaderTimerTick, ReplicaId, Term};
+    use std::time::Duration;
 
     #[tokio::test]
     async fn leader_timer_handle_lifecycle() {
