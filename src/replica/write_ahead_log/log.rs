@@ -1,29 +1,10 @@
-//! This module is a raft-specific commit log that wraps the generic commit log. Right now, this
-//! might seem odd. But I plan to move the commitlog mod into its own crate/repo, at which point
-//! this abstraction will make more sense.
-
-mod commit_stream;
-
-pub(crate) use commit_stream::CommitStream;
-pub(crate) use commit_stream::CommittedEntry;
-
 use crate::commitlog;
 use crate::commitlog::Index;
 use crate::replica::local_state::Term;
 use crate::replica::write_ahead_log::commit_stream::CommitStreamPublisher;
 use bytes::Bytes;
 use std::io;
-
-pub(super) fn wired<L>(logger: slog::Logger, log: L) -> (WriteAheadLog<L>, CommitStream)
-where
-    L: commitlog::Log<WriteAheadLogEntry>,
-{
-    let (publisher, stream) = commit_stream::new();
-
-    let wal = WriteAheadLog::new(logger, log, publisher);
-
-    (wal, stream)
-}
+use crate::replica::WriteAheadLogEntry;
 
 /// RaftLog is the raft-specific log facade.
 ///
@@ -34,9 +15,9 @@ where
 ///
 /// A log entry's state has no global truth. Each replica will have their own local view of what
 /// state the log entry is in.
-pub(super) struct WriteAheadLog<L>
-where
-    L: commitlog::Log<WriteAheadLogEntry>,
+pub(in super::super) struct WriteAheadLog<L>
+    where
+        L: commitlog::Log<WriteAheadLogEntry>,
 {
     // Application's info/debug log.
     logger: slog::Logger,
@@ -56,10 +37,10 @@ where
 }
 
 impl<L> WriteAheadLog<L>
-where
-    L: commitlog::Log<WriteAheadLogEntry>,
+    where
+        L: commitlog::Log<WriteAheadLogEntry>,
 {
-    fn new(logger: slog::Logger, log: L, commit_stream: CommitStreamPublisher) -> Self {
+    pub(super) fn new(logger: slog::Logger, log: L, commit_stream: CommitStreamPublisher) -> Self {
         // TODO:3 properly initialize based on existing log. For now, always assume empty log.
         assert_eq!(
             log.next_index(),
@@ -77,11 +58,11 @@ where
         }
     }
 
-    pub(super) fn latest_entry(&self) -> Option<(Term, Index)> {
+    pub(crate) fn latest_entry(&self) -> Option<(Term, Index)> {
         self.latest_entry_metadata
     }
 
-    pub(super) fn read(&self, index: Index) -> Result<Option<WriteAheadLogEntry>, io::Error> {
+    pub(crate) fn read(&self, index: Index) -> Result<Option<WriteAheadLogEntry>, io::Error> {
         self.log.read(index)
     }
 
@@ -94,7 +75,7 @@ where
     }
 
     /// Remove anything starting at `index` and later.
-    pub(super) fn truncate(&mut self, index: Index) -> Result<(), io::Error> {
+    pub(crate) fn truncate(&mut self, index: Index) -> Result<(), io::Error> {
         let mut new_latest_entry_metadata = None;
         if let Some(new_latest_entry_index) = index.checked_minus(1) {
             new_latest_entry_metadata = self
@@ -110,7 +91,7 @@ where
         Ok(())
     }
 
-    pub(super) fn append(&mut self, entry: WriteAheadLogEntry) -> Result<Index, io::Error> {
+    pub(crate) fn append(&mut self, entry: WriteAheadLogEntry) -> Result<Index, io::Error> {
         let appended_term = entry.term;
         let appended_index = self.log.append(entry)?;
         // Only update state after log action completes.
@@ -119,11 +100,11 @@ where
         Ok(appended_index)
     }
 
-    pub(super) fn commit_index(&self) -> Option<Index> {
+    pub(crate) fn commit_index(&self) -> Option<Index> {
         self.commit_index
     }
 
-    pub(super) fn ratchet_fwd_commit_index_if_valid(
+    pub(crate) fn ratchet_fwd_commit_index_if_valid(
         &mut self,
         tentative_new_commit_index: Index,
         current_term: Term,
@@ -149,7 +130,7 @@ where
         Ok(())
     }
 
-    pub(super) fn ratchet_fwd_commit_index_if_changed(&mut self, new_commit_index: Index) {
+    pub(crate) fn ratchet_fwd_commit_index_if_changed(&mut self, new_commit_index: Index) {
         // Gracefully handle unchanged. Panic (later) if index is decreasing.
         if matches!(self.commit_index(), Some(ci) if ci == new_commit_index) {
             return;
@@ -185,7 +166,7 @@ where
     }
 
     /// apply_all_committed_entries applies all committed but unapplied entries in order.
-    pub(super) fn apply_all_committed_entries(&mut self) {
+    pub(crate) fn apply_all_committed_entries(&mut self) {
         if let Err(e) = self.try_apply_all_committed_entries() {
             // We've already persisted the log. Applying committed logs is not on critical
             // path. We can wait to retry next time.
@@ -231,78 +212,5 @@ where
             .notify_commit(&self.logger, entry.term, index_to_apply, Bytes::from(entry.data));
 
         Ok(())
-    }
-}
-
-/// Byte representation:
-///
-/// ```text
-/// |                                         1                           |
-/// | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 0 | 1 | 2 | 3 | 4 | 5 | ... |
-/// +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+-...-+
-/// |Vrs|       Term (8 bytes)          |   Data (variable size)      ... |
-/// +---+-------------------------------+-----------------------------...-+
-/// ```
-///
-/// * `Vrs` - version of the serialized payload
-/// * `Term` - raft leadership term when this entry was created
-/// * `Data` - app specific data payload
-///
-/// Not needed:
-///
-/// * Checksum is not needed, it's guaranteed by underlying commitlog.
-/// * Size/length of `Data` is not needed; the underlying commitlog will give us the correctly allocated array.
-#[derive(Clone)]
-pub(crate) struct WriteAheadLogEntry {
-    pub term: Term,
-    pub data: Vec<u8>,
-}
-
-const RAFT_LOG_ENTRY_FORMAT_VERSION: u8 = 1;
-
-impl commitlog::Entry for WriteAheadLogEntry {}
-
-impl From<Vec<u8>> for WriteAheadLogEntry {
-    fn from(bytes: Vec<u8>) -> Self {
-        // TODO:2.5 research how to do this correctly, safely, and efficiently.
-        // TODO:2.5 use TryFrom so we can return error
-        assert!(bytes.len() >= 9);
-        assert_eq!(bytes[0], RAFT_LOG_ENTRY_FORMAT_VERSION);
-
-        let term: u64 = bytes[1] as u64
-            | (bytes[2] as u64) << 1 * 8
-            | (bytes[3] as u64) << 2 * 8
-            | (bytes[4] as u64) << 3 * 8
-            | (bytes[5] as u64) << 4 * 8
-            | (bytes[6] as u64) << 5 * 8
-            | (bytes[7] as u64) << 6 * 8
-            | (bytes[8] as u64) << 7 * 8;
-        WriteAheadLogEntry {
-            term: Term::new(term),
-            data: bytes[9..].to_vec(),
-        }
-    }
-}
-
-impl Into<Vec<u8>> for WriteAheadLogEntry {
-    fn into(self) -> Vec<u8> {
-        let mut bytes: Vec<u8> = Vec::with_capacity(1 + 8 + self.data.len());
-
-        let term = self.term.as_u64();
-        bytes.push(RAFT_LOG_ENTRY_FORMAT_VERSION);
-        bytes.push(term as u8);
-        bytes.push((term >> 1 * 8) as u8);
-        bytes.push((term >> 2 * 8) as u8);
-        bytes.push((term >> 3 * 8) as u8);
-        bytes.push((term >> 4 * 8) as u8);
-        bytes.push((term >> 5 * 8) as u8);
-        bytes.push((term >> 6 * 8) as u8);
-        bytes.push((term >> 7 * 8) as u8);
-
-        for b in self.data {
-            bytes.push(b);
-        }
-
-        bytes
     }
 }
